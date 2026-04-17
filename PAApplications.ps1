@@ -937,10 +937,8 @@ try {  #
     #region Read settings
     Write-Log "--- Read settings ---"
     # Script block (DelphiScript): Get current year (for copyright etc.)
-    # Converted from DelphiScript: Get current year (for copyright etc.)
-    # --- REVIEW THIS CONVERSION ---
-    # DELPHI: //////////////////////////////////////////////////// //        Default script code. DelphiScript       // //             AutomatedQA Corp (c) 2012          // ////////////////////////////////////////////////////  procedure Main; var   Year: Integer;   Month: Integer;   Day: Integer; begin   DecodeDate(Date, Year, Month, Day);    Variables.CURRENT_YEAR := IntToStr(Year); end;
-    # --- END DELPHISCRIPT (manual conversion required) ---
+    $CURRENT_YEAR = (Get-Date).Year
+    Write-Log "Current year: $CURRENT_YEAR"
     Write-Log "[DEBUG] Checking INI file: ${ABSOPENEDPROJECTDIR}PAApplications.ini exists = $(Test-Path "${ABSOPENEDPROJECTDIR}PAApplications.ini")"
     if (Test-Path "${ABSOPENEDPROJECTDIR}PAApplications.ini") {  # Check for PAApplications.ini
         Write-Log "[DEBUG] NIGHTLY_BUILD='$NIGHTLY_BUILD' NEXT_PROJECT_TO_BUILD='$NEXT_PROJECT_TO_BUILD'"
