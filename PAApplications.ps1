@@ -892,10 +892,7 @@ function Invoke-Check-build-log-file {
     } else {
         $LogText = Get-Content -Path "$LogFile" -Raw  # Load log file text
         # Script block (DelphiScript): Replace CR with CRLF in text
-        # Converted from DelphiScript: Replace CR with CRLF in text
-        # --- REVIEW THIS CONVERSION ---
-        # DELPHI: //////////////////////////////////////////////////// //        Default script code. DelphiScript       // //             AutomatedQA Corp (c) 2012          // ////////////////////////////////////////////////////  procedure Main; begin   Variables.LogText := Utilities.AdjustLineBreaks(Variables.LogText); end;
-        # --- END DELPHISCRIPT (manual conversion required) ---
+        $LogText = $LogText -replace "`r(?!`n)", "`r`n"
         Set-Content -Path "$LogFile" -Value "$LogText"  # Write text back to log file
         $LogText = Invoke-DosCommand -Command "`"C:\Compilers\RAD Studio 2007\CodeGear\Bin\grep`" -i fatal: `"$LogFile`""  # Check for errors
         $LogText = $LogText.Replace('"C:\Compilers\RAD Studio 2007\CodeGear\Bin\grep" -i fatal: "$LogFile"', '.')  # Remove command line from string
