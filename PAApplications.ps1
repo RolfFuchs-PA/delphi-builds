@@ -690,15 +690,19 @@ function Invoke-Build-project-DPR-file {
     } else {
         $AddEurekaLog = ""  # Unset AddEurekaLog flag
     }
-    if (("$Compiler" -eq "6") -and ("$Compiler" -eq "2007")) {  # If building legacy projects
+    if (("$Compiler" -eq "6") -or ("$Compiler" -eq "2007")) {  # If building legacy projects
         # Script block (DelphiScript): Construct project build string into StandardBuild and debug string into DebugBuild
-        # Converted from DelphiScript: Construct project build string into StandardBuild and debug string into DebugBuild
-        # --- REVIEW THIS CONVERSION ---
-        # DELPHI: //////////////////////////////////////////////////// //        Default script code. DelphiScript       // //             AutomatedQA Corp (c) 2012          // ////////////////////////////////////////////////////  procedure Main; var   ProjectPath;   DofFilePath;   DelphiRoot;   Builder;   EurekaFlag;   TestFlag;   DebugFlag;   OutputPath; begin    ProjectPath := Variables.ProjectFile;   DofFilePath := ChangeFileExt(ProjectPath, '.dof'); // only Delphi 6 has DOF files    //Log.Message(DofFilePath);    Variables.StandardBuild := ''; // will hold the result string   Variables.DebugBuild := ''; // will hold the result debug string    if Utilities.UpperCase(Variables.Compiler) = '6' then     DelphiRoot := 'C:\Compilers\Delphi 6\Borland\Bin\'   else if Utilities.UpperCase(Variables.Compiler) = '2007' then     DelphiRoot := 'C:\Compilers\RAD Studio 2007\CodeGear\Bin\'   else     Exit;    if Variables.AddEurekaLog <> '' then // eureka enabled     begin       Builder := 'ecc32.exe';       EurekaFlag := '--el_verbose --el_config"' + Variables.EurekaLogConfigFile + '"';     end   else     begin       Builder := 'dcc32.exe';       EurekaFlag := '';     end;    if (Pos('TESTS.DPR', Uppercase(ProjectPath)) > 0) or // test project - build as a console app     (Pos('PAUNITCMD.DPR', Uppercase(ProjectPath)) > 0) then // PAUnit quirk - also build a console app     TestFlag := '-CC'   else     TestFlag := '';    // standard build   DebugFlag := '';   OutputPath := '..\';   Variables.StandardBuildLog := ExtractFilePath(ProjectPath) + 'Build' +  ExtractFileName(ProjectPath) + '.log';   Variables.StandardBuild := '"' + DelphiRoot + Builder + '" ' + DebugFlag +     ' -B -E' + OutputPath + ' ' + EurekaFlag +     ' ' + TestFlag + ' ' + ExtractFileName(ProjectPath) + ' > "' + Variables.StandardBuildLog + '"';    // debug build   DebugFlag := '-V';   OutputPath := '..\debug';   Variables.DebugBuildLog := ExtractFilePath(ProjectPath) + 'Debug-Build' + ExtractFileName(ProjectPath) + '.log';   Variables.DebugBuild := '"' + DelphiRoot + Builder + '" ' + DebugFlag +     ' -B -E' + OutputPath + ' ' + EurekaFlag +     ' ' + TestFlag + ' ' + ExtractFileName(ProjectPath) + ' > "' + Variables.DebugBuildLog + '"'; end;
-        # --- END DELPHISCRIPT (manual conversion required) ---
-        if (("$StandardBuild" -ceq "") -and ("$DebugBuild" -ceq "")) {  # Check that build strings have been populated
-            throw "Failed to construct project build string Compiler: $Compiler Project: $ProjectFile"
-        }
+        Write-Log "Constructing compiler command for $Compiler"
+    
+        # Build the standard (release) command
+        $StandardBuild = "dcc32.exe -B -E`"$ProjectLocation..\`" -U`"$DCCUnitSearch`" -D`"$DCCDefines`" `"$ProjectFile`""
+    
+        # Build the debug command (add -V for debug info)
+        $DebugBuild = "dcc32.exe -B -E`"$ProjectLocation..\`" -U`"$DCCUnitSearch`" -D`"$DCCDefines`" -V `"$ProjectFile`""
+    
+        Write-Log "StandardBuild: $StandardBuild"
+        Write-Log "DebugBuild: $DebugBuild"
+        
         Invoke-DosCommand -Command "$StandardBuild" -WorkingDirectory "$ProjectLocation"  # Build standard project
         Invoke-DosCommand -Command "$DebugBuild" -WorkingDirectory "$ProjectLocation"  # Build debug project
         Invoke-CheckBuildLogFile   # Check standard build result
