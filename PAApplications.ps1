@@ -939,6 +939,7 @@ try {  #
     Write-Log "--- Read settings ---"
     # Script block (DelphiScript): Get current year (for copyright etc.)
     $CURRENT_YEAR = (Get-Date).Year
+    $BUILD_YEAR = $CURRENT_YEAR  # BUILD_YEAR is used for major version bumps
     Write-Log "Current year: $CURRENT_YEAR"
     Write-Log "[DEBUG] Checking INI file: ${ABSOPENEDPROJECTDIR}PAApplications.ini exists = $(Test-Path "${ABSOPENEDPROJECTDIR}PAApplications.ini")"
     if (Test-Path "${ABSOPENEDPROJECTDIR}PAApplications.ini") {  # Check for PAApplications.ini
@@ -1367,33 +1368,30 @@ try {  #
             }
             if ("$VAR_RESULT" -ceq "1") {  # Standard build (build number incremented)
                 # Script block (VBScript): V_BUILD + 1
-                # Converted from DelphiScript: V_BUILD + 1
-                # --- REVIEW THIS CONVERSION ---
-                # DELPHI: '//////////////////////////////////////////////////// '//          Default script code. VBScript         // '//             AutomatedQA Corp (c) 2012          // '////////////////////////////////////////////////////  Sub Main   ' standard build   Variables.V_BUILD = Variables.V_BUILD + 1 End Sub
-                # --- END DELPHISCRIPT (manual conversion required) ---
-            }
+                $V_BUILD = $V_BUILD + 1
+                Write-Log "Version updated (standard build): $V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"            }
             if ("$VAR_RESULT" -ceq "2") {  # Relase build (build number incremented)
                 # Script block (VBScript): V_RELEASE + 1, V_BUILD = 0
-                # Converted from DelphiScript: V_RELEASE + 1, V_BUILD = 0
-                # --- REVIEW THIS CONVERSION ---
-                # DELPHI: '//////////////////////////////////////////////////// '//          Default script code. VBScript         // '//             AutomatedQA Corp (c) 2012          // '////////////////////////////////////////////////////  Sub Main   ' release   Variables.V_RELEASE = Variables.V_RELEASE + 1   Variables.V_BUILD = 0 End Sub
-                # --- END DELPHISCRIPT (manual conversion required) ---
+                $V_RELEASE = $V_RELEASE + 1
+                $V_BUILD = 0
+                Write-Log "Version updated (release build): $V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"                
                 $PASQL_SCRIPTS_HAVE_CHANGED = "TRUE"  # Set PASQL_SCRIPTS_HAVE_CHANGED = True if changing "Build" number
             }
             if ("$VAR_RESULT" -ceq "3") {  # Minor build (minor number incremented)
                 # Script block (VBScript): V_MINOR + 1, V_RELEASE = 0, V_BUILD = 0
-                # Converted from DelphiScript: V_MINOR + 1, V_RELEASE = 0, V_BUILD = 0
-                # --- REVIEW THIS CONVERSION ---
-                # DELPHI: '//////////////////////////////////////////////////// '//          Default script code. VBScript         // '//             AutomatedQA Corp (c) 2012          // '////////////////////////////////////////////////////  Sub Main   ' release   Variables.V_MINOR = Variables.V_MINOR + 1   Variables.V_RELEASE = 0   Variables.V_BUILD = 0 End Sub
-                # --- END DELPHISCRIPT (manual conversion required) ---
+                $V_MINOR = $V_MINOR + 1
+                $V_RELEASE = 0
+                $V_BUILD = 0
+                Write-Log "Version updated (minor build): $V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"
                 $PASQL_SCRIPTS_HAVE_CHANGED = "TRUE"  # Set PASQL_SCRIPTS_HAVE_CHANGED = True if changing "Minor" number
             }
             if ("$VAR_RESULT" -ceq "4") {  # Major build (major number incremented)
                 # Script block (VBScript): V_MAJOR = current year, V_MINOR = 1, V_RELEASE = 0, V_BUILD = 0
-                # Converted from DelphiScript: V_MAJOR = current year, V_MINOR = 1, V_RELEASE = 0, V_BUILD = 0
-                # --- REVIEW THIS CONVERSION ---
-                # DELPHI: '//////////////////////////////////////////////////// '//          Default script code. VBScript         // '//             AutomatedQA Corp (c) 2012          // '////////////////////////////////////////////////////  Sub Main   ' release   Variables.V_MAJOR = Variables.BUILD_YEAR   Variables.V_MINOR = 1   Variables.V_RELEASE = 0   Variables.V_BUILD = 0 End Sub
-                # --- END DELPHISCRIPT (manual conversion required) ---
+                $V_MAJOR = $CURRENT_YEAR
+                $V_MINOR = 1
+                $V_RELEASE = 0
+                $V_BUILD = 0
+                Write-Log "Version updated (major build): $V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"
                 $PASQL_SCRIPTS_HAVE_CHANGED = "TRUE"  # Set PASQL_SCRIPTS_HAVE_CHANGED = True if changing "Major" number
             }
             # [DISABLED] If ... Then (V_MAJOR.V_MINOR.V_RELEASE or V_MAJOR.V_MINOR compare to SOURCE_CONTROL_VERSION and SOURCE_CONTROL_LABEL is not set) - V_MAJOR.V_MINOR.V_RELEASE or V_MAJOR.V_MINOR compare to SOURCE_CONTROL_VERSION and SOURCE_CONTROL_LABEL is not set
