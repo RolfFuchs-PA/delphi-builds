@@ -1337,9 +1337,20 @@ try {  #
         # Script block (VBScript): Save temporary numbers (incremented by 1)
         # Converted from DelphiScript: Save temporary numbers (incremented by 1)
         # --- REVIEW THIS CONVERSION ---
-        # DELPHI: '//////////////////////////////////////////////////// '//          Default script code. VBScript         // '//             AutomatedQA Corp (c) 2012          // '////////////////////////////////////////////////////  Sub Main   VersionArray = split(Variables.BUILD_VERSION, ".", 4)    Variables.V_MAJOR = VersionArray(0)   Variables.V_MINOR = VersionArray(1)   Variables.V_RELEASE = VersionArray(2)   Variables.V_BUILD = VersionArray(3)    Variables.T_MAJ = Variables.V_MAJOR + 1   Variables.T_MIN = Variables.V_MINOR + 1   Variables.T_REL = Variables.V_RELEASE + 1   Variables.T_BLD = Variables.V_BUILD + 1 End Sub
-        # --- END DELPHISCRIPT (manual conversion required) ---
-        if (("$NIGHTLY_BUILD" -ne "TRUE") -and ("$SOURCE_CONTROL_LABEL" -eq "")) {  # If not nightly build and SOURCE_CONTROL_LABEL is not set
+        # Script block (VBScript): Parse version into V_MAJOR/MINOR/RELEASE/BUILD
+        $versionParts = $BUILD_VERSION -split '\.'
+        $V_MAJOR = [int]$versionParts[0]
+        $V_MINOR = [int]$versionParts[1]
+        $V_RELEASE = [int]$versionParts[2]
+        $V_BUILD = [int]$versionParts[3]
+
+        # Also create temp variables for incrementing
+        $T_MAJ = $V_MAJOR + 1
+        $T_MIN = $V_MINOR + 1
+        $T_REL = $V_RELEASE + 1
+        $T_BLD = $V_BUILD + 1
+
+        Write-Log "Parsed version: $V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"        if (("$NIGHTLY_BUILD" -ne "TRUE") -and ("$SOURCE_CONTROL_LABEL" -eq "")) {  # If not nightly build and SOURCE_CONTROL_LABEL is not set
             # TODO: String Substring - check parameters for $BUILD_YEAR  # Get the last 2 digits of current year
             # Radio Group: 
             $VAR_RESULT = Show-RadioMenu -Title "Set version for this build" -Options @(
