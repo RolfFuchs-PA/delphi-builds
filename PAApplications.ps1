@@ -1367,7 +1367,6 @@ try {  #
     if ("$BUILD_VERSION_SET" -ne "Y") {  # If BUILD_VERSION_SET <> Y
         # Script block (VBScript): Save temporary numbers (incremented by 1)
         # Converted from DelphiScript: Save temporary numbers (incremented by 1)
-        # --- REVIEW THIS CONVERSION ---
         # Script block (VBScript): Parse version into V_MAJOR/MINOR/RELEASE/BUILD
         $versionParts = $BUILD_VERSION -split '\.'
         $V_MAJOR = [int]$versionParts[0]
@@ -1459,13 +1458,16 @@ try {  #
         }
         if (("$PASQL_SCRIPTS_HAVE_CHANGED" -ne "TRUE") -and ("$VAR_RESULT" -ne "0")) {  # If not PASQL_SCRIPTS_HAVE_CHANGED yet set
             $SETUP_PASQL_DATE = (Get-Item "$SETUP_PASQL_FILE_NAME").LastWriteTime.ToString()  # Set SETUP_PASQL_DATE from setup.pasql file
-            # Script block (DelphiScript): Compare setup and last-build dates
-            $setupDate = [datetime]::MinValue
-            $buildDate = [datetime]::MinValue
-            if ([datetime]::TryParse("$SETUP_PASQL_DATE", [ref]$setupDate) -and [datetime]::TryParse("$LAST_BUILD_DATE_TIME", [ref]$buildDate)) {
-                if ($setupDate -ge $buildDate) {
-                    $PASQL_SCRIPTS_HAVE_CHANGED = "TRUE"
+            # Parse and compare PASQL setup date vs build date
+            try {
+                $SetupDate = [datetime]::Parse($SETUP_PASQL_DATE)
+                $BuildDate = [datetime]::Parse($LAST_BUILD_DATE_TIME)
+                if ($SetupDate -ge $BuildDate) {
+                    $PASQL_SCRIPTS_HAVE_CHANGED = 'TRUE'
+                    Write-Log "PASQL scripts changed: Setup date ($SetupDate) >= Build date ($BuildDate)"
                 }
+            } catch {
+                Write-Log "[WARNING] Failed to parse PASQL dates: $_"
             }
             if (("$PASQL_SCRIPTS_HAVE_CHANGED" -ne "TRUE") -and ("$VAR_RESULT" -ne "0")) {  # If not PASQL_SCRIPTS_HAVE_CHANGED yet set
                 $VAR_RESULT = 0
@@ -1474,13 +1476,16 @@ try {  #
                     $VAR_RESULT++
                     if ("$VAR_RESULT_TEXT" -ne "$SETUP_PASQL_FILE_NAME") {  # If a more recent file found set PASQL_SCRIPTS_HAVE_CHANGED to TRUE
                         $TEMP_VAR = (Get-Item "$VAR_RESULT_TEXT").LastWriteTime.ToString()  # Get last modified date of each PASQL
-                        # Script block (DelphiScript): Compare PASQL file date and setup date
-                        $setupDate = [datetime]::MinValue
-                        $fileDate = [datetime]::MinValue
-                        if ([datetime]::TryParse("$SETUP_PASQL_DATE", [ref]$setupDate) -and [datetime]::TryParse("$TEMP_VAR", [ref]$fileDate)) {
-                            if ($fileDate -ge $setupDate) {
-                                $PASQL_SCRIPTS_HAVE_CHANGED = "TRUE"
+                        # Compare file modification date with setup date
+                        try {
+                            $FileDate = [datetime]::Parse($TEMP_VAR)
+                            $SetupDate = [datetime]::Parse($SETUP_PASQL_DATE)
+                            if ($FileDate -ge $SetupDate) {
+                                $PASQL_SCRIPTS_HAVE_CHANGED = 'TRUE'
+                                Write-Log "PASQL script changed: File date ($FileDate) >= Setup date ($SetupDate)"
                             }
+                        } catch {
+                            Write-Log "[WARNING] Failed to parse file dates: $_"
                         }
                         if ("$PASQL_SCRIPTS_HAVE_CHANGED" -eq "TRUE") {
                             break
