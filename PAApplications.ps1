@@ -2569,7 +2569,7 @@ try {  #
         #region Update last build date in ini file
         Write-Log "--- Update last build date in ini file ---"
         # Script block (DelphiScript): update LAST_BUILD_DATE_TIME
-        $LAST_BUILD_DATE_TIME = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        $LAST_BUILD_DATE_TIME = (Get-Date).ToString()
         Set-IniValue -Path "$BUILD_INI" -Section "$INI_SECTION" -Key "LAST_BUILD_DATE_TIME" -Value "$LAST_BUILD_DATE_TIME"  # Set LAST_BUILD_DATE_TIME
         Set-IniValue -Path "$BUILD_INI" -Section "$INI_SECTION" -Key "LAST_BUILD_VERSION" -Value "$LAST_BUILD_VERSION"  # Set LAST_BUILD_VERSION
         #endregion Update last build date in ini file
