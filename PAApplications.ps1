@@ -1960,9 +1960,10 @@ try {  #
                         $EXCEPTION_MESSAGE = "Test did not complete in 1 hour"
                     }
                     # Script block (DelphiScript): set CURRENT_PROCESS from TEMP_VAR
-                    $CURRENT_PROCESS = [System.IO.Path]::GetFileNameWithoutExtension("$TEMP_VAR")
-                    if (Get-Process -Name "$CURRENT_PROCESS" -ErrorAction SilentlyContinue) {  # 
-                        Stop-Process -Name "$CURRENT_PROCESS" -Force -ErrorAction SilentlyContinue  # Terminate running test
+                    $CURRENT_PROCESS = [System.IO.Path]::GetFileName("$TEMP_VAR")
+                    $CURRENT_PROCESS_NAME = [System.IO.Path]::GetFileNameWithoutExtension("$CURRENT_PROCESS")
+                    if (Get-Process -Name "$CURRENT_PROCESS_NAME" -ErrorAction SilentlyContinue) {  # 
+                        Stop-Process -Name "$CURRENT_PROCESS_NAME" -Force -ErrorAction SilentlyContinue  # Terminate running test
                     }
                 }
                 $VAR_RESULT_TEXT = Get-Content -Path "$TEMP_VAR.log" -Raw  # 
@@ -2082,8 +2083,9 @@ try {  #
             Write-Log "Build the final setup name into TEMP_VAR_3"
             # Script block (DelphiScript): Build the Wise install string into TEMP_VAR_2
             $setupPath = Join-Path "$BUILD_TEMP_PATH" "Setup"
+            $currentYearForSetup = if ($CURRENT_YEAR) { $CURRENT_YEAR } else { (Get-Date).Year }
             Write-Log "$setupPath\"
-            $TEMP_VAR_2 = "`"C:\Program Files (x86)\Wise Installation System\Wise32.exe`" /d_PA_VERSION_=`"$TEMP_VAR`" /d_PA_COPYRIGHT_YEAR_=`"$CURRENT_YEAR`" /c `"$setupPath\Standard Setup.wse`""
+            $TEMP_VAR_2 = "`"C:\Program Files (x86)\Wise Installation System\Wise32.exe`" /d_PA_VERSION_=`"$TEMP_VAR`" /d_PA_COPYRIGHT_YEAR_=`"$currentYearForSetup`" /c `"$setupPath\Standard Setup.wse`""
             New-Item -ItemType Directory -Path "$BUILD_TEMP_PATH\builds" -Force | Out-Null  # Create directory for the final builds
             # LABEL: EXE build  (GoTo not supported in PS - restructure logic)
             Invoke-DosCommand -Command "$TEMP_VAR_2" -WorkingDirectory "$BUILD_TEMP_PATH\setup"  # Run Wise script
@@ -2257,7 +2259,8 @@ try {  #
                 Replace-InFile -Path "$PA_FRAMEWORK_FOLDER\Compiled Resources\Server\CopyServerClientDll.bat" -Find "^pause" -Replace "echo done!"  # 
                 Invoke-DosCommand -Command "$PA_FRAMEWORK_FOLDER\Compiled Resources\Server\CopyServerClientDll.bat`"" -WorkingDirectory "$PA_FRAMEWORK_FOLDER\Compiled Resources\Server"  # Copy resources
                 # Script block (JScript): Set SOURCE_CONTROL_TRUNK_PATH
-                $SOURCE_CONTROL_TRUNK_PATH = [regex]::Replace("$SOURCE_CONTROL_SOURCE_PATH", "/delphi$", "", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                $normalizedSourceControlPath = ("$SOURCE_CONTROL_SOURCE_PATH").Replace('\', '/')
+                $SOURCE_CONTROL_TRUNK_PATH = [regex]::Replace("$normalizedSourceControlPath", "/delphi$", "", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
                 $PROJECT_LABEL_PATH = "$SOURCE_CONTROL_TRUNK_PATH"  # set PROJECT_LABEL_PATH
                 # Script block (JScript): Set SOURCE_CONTROL_VISUAL_STUDIO_PATH
                 $SOURCE_CONTROL_VISUAL_STUDIO_PATH = "$SOURCE_CONTROL_TRUNK_PATH/Visual Studio"
