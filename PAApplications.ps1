@@ -308,6 +308,21 @@ function Invoke-Program {
     return $process.ExitCode
 }
 
+function Compare-Versions {
+    param([string]$Version1, [string]$Version2)
+    # Returns: 1 if Version1 > Version2, -1 if Version1 < Version2, 0 if equal
+    $v1Parts = $Version1 -split '\.' | ForEach-Object { [int]$_ }
+    $v2Parts = $Version2 -split '\.' | ForEach-Object { [int]$_ }
+    
+    for ($i = 0; $i -lt 4; $i++) {
+        $v1 = $v1Parts[$i] ?? 0
+        $v2 = $v2Parts[$i] ?? 0
+        if ($v1 -lt $v2) { return -1 }
+        if ($v1 -gt $v2) { return 1 }
+    }
+    return 0
+}
+
 #region Vault Source Control Helpers
 
 $script:VaultExe = 'C:\Program Files (x86)\SourceGear\Vault Client\vault.exe'
@@ -1294,11 +1309,12 @@ try {  #
                 } else {
                     $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"Build`"] "  # V_BUILD
                 }
-                # Script block (VBScript): Set BUILD_VERSION to the higher of BUILD_VERSION and the one just read
-                # Converted from DelphiScript: Set BUILD_VERSION to the higher of BUILD_VERSION and the one just read
-                # --- REVIEW THIS CONVERSION ---
-                # DELPHI: '//////////////////////////////////////////////////// '//          Default script code. VBScript         // '//             AutomatedQA Corp (c) 2012          // '////////////////////////////////////////////////////  function IsVersionGreater(Version1, Version2) ' return true if Version1 > Version2     VersionArray1 = split(Version1, ".", 4)    VersionArray2 = split(Version2, ".", 4)     for i = 0 to 3      VersionArray1(i) = cint(VersionArray1(i))      VersionArray2(i) = cint(VersionArray2(i))    next     IsVersionGreater = False     if VersionArray1(0) < VersionArray2(0) then       exit function    elseif VersionArray1(0) > VersionArray2(0) then       IsVersionGreater = True       exit function    elseif VersionArray1(1) < VersionArray2(1) then       exit function    elseif VersionArray1(1) > VersionArray2(1) then       IsVersionGreater = True       exit function    elseif VersionArray1(2) < VersionArray2(2) then       exit function    elseif VersionArray1(2) > VersionArray2(2) then       IsVersionGreater = True       exit function    elseif VersionArray1(3) <= VersionArray2(3) then       exit function    elseif VersionArray1(3) > VersionArray2(3) then       IsVersionGreater = True       exit function    end if end function  Sub Main   TEMP = Variables.V_MAJOR + "." + Variables.V_MINOR + "." + Variables.V_RELEASE + "." + Variables.V_BUILD    'Variables.BUILD_VERSION = "0.0.0.0"   'TEMP = "1.0.0.0"    if IsVersionGreater(TEMP, Variables.BUILD_VERSION) then     'Log.Message("greater")     Variables.BUILD_VERSION = TEMP    'else     'Log.Message("smaller")   end if End Sub
-                # --- END DELPHISCRIPT (manual conversion required) ---
+                # Script block (VBScript): Set BUILD_VERSION to higher of two versions
+                $TEMP = "$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"
+                if ((Compare-Versions $TEMP $BUILD_VERSION) -gt 0) {
+                  $BUILD_VERSION = $TEMP
+                  Write-Log "BUILD_VERSION updated to: $BUILD_VERSION"
+                }
             }
         } else {
             if ("$DELPHI_VERSION" -ceq "6") {  # Delphi 6
@@ -1308,11 +1324,12 @@ try {  #
                     $V_MINOR = Get-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info" -Key "MinorVer"  # 
                     $V_RELEASE = Get-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info" -Key "Release"  # 
                     $V_BUILD = Get-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info" -Key "Build"  # 
-                    # Script block (VBScript): Set BUILD_VERSION to the higher of BUILD_VERSION and the one just read
-                    # Converted from DelphiScript: Set BUILD_VERSION to the higher of BUILD_VERSION and the one just read
-                    # --- REVIEW THIS CONVERSION ---
-                    # DELPHI: '//////////////////////////////////////////////////// '//          Default script code. VBScript         // '//             AutomatedQA Corp (c) 2012          // '////////////////////////////////////////////////////  function IsVersionGreater(Version1, Version2) ' return true if Version1 > Version2     VersionArray1 = split(Version1, ".", 4)    VersionArray2 = split(Version2, ".", 4)     for i = 0 to 3      VersionArray1(i) = cint(VersionArray1(i))      VersionArray2(i) = cint(VersionArray2(i))    next     IsVersionGreater = False     if VersionArray1(0) < VersionArray2(0) then       exit function    elseif VersionArray1(0) > VersionArray2(0) then       IsVersionGreater = True       exit function    elseif VersionArray1(1) < VersionArray2(1) then       exit function    elseif VersionArray1(1) > VersionArray2(1) then       IsVersionGreater = True       exit function    elseif VersionArray1(2) < VersionArray2(2) then       exit function    elseif VersionArray1(2) > VersionArray2(2) then       IsVersionGreater = True       exit function    elseif VersionArray1(3) <= VersionArray2(3) then       exit function    elseif VersionArray1(3) > VersionArray2(3) then       IsVersionGreater = True       exit function    end if end function  Sub Main   TEMP = Variables.V_MAJOR + "." + Variables.V_MINOR + "." + Variables.V_RELEASE + "." + Variables.V_BUILD    'Variables.BUILD_VERSION = "0.0.0.0"   'TEMP = "1.0.0.0"    if IsVersionGreater(TEMP, Variables.BUILD_VERSION) then     'Log.Message("greater")     Variables.BUILD_VERSION = TEMP    'else     'Log.Message("smaller")   end if End Sub
-                    # --- END DELPHISCRIPT (manual conversion required) ---
+                    # Script block (VBScript): Set SOURCE_CONTROL_VERSION to higher of two versions
+                    $TEMP = "$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"
+                    if ((Compare-Versions $TEMP $SOURCE_CONTROL_VERSION) -gt 0) {
+                      $SOURCE_CONTROL_VERSION = $TEMP
+                      Write-Log "SOURCE_CONTROL_VERSION updated to: $SOURCE_CONTROL_VERSION"
+                    }
                 }
             } else {
                 foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\source\*.dproj" -ErrorAction SilentlyContinue)) {  # Loop through DPROJ project files, project name in VAR_RESULT_TEXT
@@ -1321,11 +1338,12 @@ try {  #
                     $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"MinorVer`"] "  # V_MINOR
                     $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"Release`"] "  # V_RELEASE
                     $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"Build`"] "  # V_BUILD
-                    # Script block (VBScript): Set BUILD_VERSION to the higher of BUILD_VERSION and the one just read
-                    # Converted from DelphiScript: Set BUILD_VERSION to the higher of BUILD_VERSION and the one just read
-                    # --- REVIEW THIS CONVERSION ---
-                    # DELPHI: '//////////////////////////////////////////////////// '//          Default script code. VBScript         // '//             AutomatedQA Corp (c) 2012          // '////////////////////////////////////////////////////  function IsVersionGreater(Version1, Version2) ' return true if Version1 > Version2     VersionArray1 = split(Version1, ".", 4)    VersionArray2 = split(Version2, ".", 4)     for i = 0 to 3      VersionArray1(i) = cint(VersionArray1(i))      VersionArray2(i) = cint(VersionArray2(i))    next     IsVersionGreater = False     if VersionArray1(0) < VersionArray2(0) then       exit function    elseif VersionArray1(0) > VersionArray2(0) then       IsVersionGreater = True       exit function    elseif VersionArray1(1) < VersionArray2(1) then       exit function    elseif VersionArray1(1) > VersionArray2(1) then       IsVersionGreater = True       exit function    elseif VersionArray1(2) < VersionArray2(2) then       exit function    elseif VersionArray1(2) > VersionArray2(2) then       IsVersionGreater = True       exit function    elseif VersionArray1(3) <= VersionArray2(3) then       exit function    elseif VersionArray1(3) > VersionArray2(3) then       IsVersionGreater = True       exit function    end if end function  Sub Main   TEMP = Variables.V_MAJOR + "." + Variables.V_MINOR + "." + Variables.V_RELEASE + "." + Variables.V_BUILD    'Variables.BUILD_VERSION = "0.0.0.0"   'TEMP = "1.0.0.0"    if IsVersionGreater(TEMP, Variables.BUILD_VERSION) then     'Log.Message("greater")     Variables.BUILD_VERSION = TEMP    'else     'Log.Message("smaller")   end if End Sub
-                    # --- END DELPHISCRIPT (manual conversion required) ---
+                    # Script block (VBScript): Version comparison
+                    $TEMP = "$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"
+                    if ((Compare-Versions $TEMP $SOURCE_CONTROL_VERSION) -gt 0) {
+                      $SOURCE_CONTROL_VERSION = $TEMP
+                      Write-Log "SOURCE_CONTROL_VERSION updated to: $SOURCE_CONTROL_VERSION"
+                    }
                 }
             }
         }
@@ -2012,9 +2030,11 @@ try {  #
             # [DISABLED] String Quoting
             # Script block (VBScript): Set TEMP_VAR to the higher of TEMP_VAR and TEMP_VAR_2
             # Converted from DelphiScript: Set TEMP_VAR to the higher of TEMP_VAR and TEMP_VAR_2
-            # --- REVIEW THIS CONVERSION ---
-            # DELPHI: '//////////////////////////////////////////////////// '//          Default script code. VBScript         // '//             AutomatedQA Corp (c) 2012          // '////////////////////////////////////////////////////  function IsVersionGreater(Version1, Version2) ' return true if Version1 > Version2     VersionArray1 = split(Version1, ".", 4)    VersionArray2 = split(Version2, ".", 4)     for i = 0 to 3      VersionArray1(i) = cint(VersionArray1(i))      VersionArray2(i) = cint(VersionArray2(i))    next     IsVersionGreater = False     if VersionArray1(0) < VersionArray2(0) then       exit function    elseif VersionArray1(0) > VersionArray2(0) then       IsVersionGreater = True       exit function    elseif VersionArray1(1) < VersionArray2(1) then       exit function    elseif VersionArray1(1) > VersionArray2(1) then       IsVersionGreater = True       exit function    elseif VersionArray1(2) < VersionArray2(2) then       exit function    elseif VersionArray1(2) > VersionArray2(2) then       IsVersionGreater = True       exit function    elseif VersionArray1(3) <= VersionArray2(3) then       exit function    elseif VersionArray1(3) > VersionArray2(3) then       IsVersionGreater = True       exit function    end if end function  Sub Main   'Variables.TEMP_VAR = "0.0.0.0"   'Variables.TEMP_VAR_2 = "1.0.0.0"    if IsVersionGreater(Variables.TEMP_VAR_2, Variables.TEMP_VAR) then     'Log.Message("greater")     Variables.TEMP_VAR = Variables.TEMP_VAR_2    'else     'Log.Message("smaller")   end if End Sub
-            # --- END DELPHISCRIPT (manual conversion required) ---
+            # Script block (VBScript): Version comparison
+            if ((Compare-Versions $TEMP_VAR_2 $TEMP_VAR) -gt 0) {
+              $TEMP_VAR = $TEMP_VAR_2
+              Write-Log "TEMP_VAR updated to: $TEMP_VAR"
+            }
         }
         if ("$TEMP_VAR" -ceq "") {
             throw "Failed to get version number: "
