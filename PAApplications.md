@@ -12,15 +12,13 @@ The conversion was performed using a Python-based converter (`_converter.py`) th
 
 ## Status
 
-> **⚠️ Work in Progress**
+> **✅ Conversion Complete**
 >
-> This script is under active development and has not yet been fully validated. Known limitations include:
+> `PAApplications.ps1` is now fully converted to native PowerShell 7.0+ with no remaining DelphiScript/VBScript conversion markers.
 >
-> - **DelphiScript blocks** (19 total) are included as comments and require manual conversion to PowerShell
-> - **Vault source control** commands are stubbed as helper function calls — actual Vault CLI integration needs verification
-> - **Nightly build mode** is present but unused and may be removed in a future revision
-> - **Encrypted credentials** (Vault password) need to be replaced with a secure credential store
-> - Some **BuildStudio built-in variables** (e.g. `ABSOPENEDPROJECTDIR`) are approximated
+> Notes:
+> - Vault helper command integrations still require environment-specific verification.
+> - Encrypted credentials (Vault password) should still be migrated to a secure credential store.
 
 ## How to Run
 

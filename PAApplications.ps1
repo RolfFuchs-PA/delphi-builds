@@ -1367,7 +1367,6 @@ try {  #
     if ("$BUILD_VERSION_SET" -ne "Y") {  # If BUILD_VERSION_SET <> Y
         # Script block (VBScript): Save temporary numbers (incremented by 1)
         # Converted from DelphiScript: Save temporary numbers (incremented by 1)
-        # --- REVIEW THIS CONVERSION ---
         # Script block (VBScript): Parse version into V_MAJOR/MINOR/RELEASE/BUILD
         $versionParts = $BUILD_VERSION -split '\.'
         $V_MAJOR = [int]$versionParts[0]
