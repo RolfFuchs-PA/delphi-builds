@@ -893,7 +893,7 @@ function Invoke-Check-build-log-file {
         $Compiler
     )
 
-    if (("$Compiler" -eq "XE2") -or ("$Compiler" -eq "XE6") -or ("$Compiler" -eq "10.4")) {  # If XE2, XE6, 10.4
+    if ($Compiler -eq "XE2" -or $Compiler -eq "XE6" -or $Compiler -eq "10.4") {  # If XE2, XE6, 10.4
         $LogText = Find-InFile -Path "$LogFile" -Find "Build succeeded."  # Search log file for "Build succeeded." string
         if ("$LogText" -ne "1") {  # If not found
             $LogText = Find-InFile -Path "$LogFile" -Find "Build FAILED."  # Search log file for "Build FAILED." string
@@ -2009,9 +2009,10 @@ try {  #
             $DPR_FILE_DATE = "$SOURCE_CONTROL_LABEL"
         }
         # Script block (DelphiScript): normalize DPR_FILE_DATE for touch.exe
-        try {
-            $DPR_FILE_DATE = ([datetime]::Parse("$DPR_FILE_DATE", [System.Globalization.CultureInfo]::CurrentCulture)).ToString("yyyy-MM-ddTHH:mm:ss")
-        } catch {
+        $parsedDprDate = [datetime]::MinValue
+        if ([datetime]::TryParse("$DPR_FILE_DATE", [System.Globalization.CultureInfo]::CurrentCulture, [System.Globalization.DateTimeStyles]::None, [ref]$parsedDprDate)) {
+            $DPR_FILE_DATE = $parsedDprDate.ToString("yyyy-MM-ddTHH:mm:ss")
+        } else {
             $DPR_FILE_DATE = ""
         }
         if ("$DPR_FILE_DATE" -ne "") {
@@ -2568,7 +2569,7 @@ try {  #
         #region Update last build date in ini file
         Write-Log "--- Update last build date in ini file ---"
         # Script block (DelphiScript): update LAST_BUILD_DATE_TIME
-        $LAST_BUILD_DATE_TIME = (Get-Date).ToString()
+        $LAST_BUILD_DATE_TIME = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
         Set-IniValue -Path "$BUILD_INI" -Section "$INI_SECTION" -Key "LAST_BUILD_DATE_TIME" -Value "$LAST_BUILD_DATE_TIME"  # Set LAST_BUILD_DATE_TIME
         Set-IniValue -Path "$BUILD_INI" -Section "$INI_SECTION" -Key "LAST_BUILD_VERSION" -Value "$LAST_BUILD_VERSION"  # Set LAST_BUILD_VERSION
         #endregion Update last build date in ini file
@@ -2584,7 +2585,7 @@ try {  #
             Invoke-VaultLabel -Repository "SDG" -Path "$PROJECT_LABEL_PATH" -Label "$LABEL"  # PROJECT_LABEL_PATH
             # Script block (DelphiScript): generate framework path
             $FRAMEWORK_PATH = ""
-            if ($PROJECT_TITLE -and $PROJECT_TITLE.ToUpper().StartsWith("BANK")) {
+            if ($PROJECT_TITLE -like "BANK*") {
                 $FRAMEWORK_PATH = "$PA_VS_FRAMEWORK_PATH"
             }
             Invoke-VaultLabel -Repository "SDG" -Path "$FRAMEWORK_PATH" -Label "$LABEL"  # Label framework
