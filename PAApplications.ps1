@@ -893,7 +893,7 @@ function Invoke-Check-build-log-file {
         $Compiler
     )
 
-    if ((("$Compiler" -eq "XE2") -and ("$Compiler" -eq "XE6")) -and ("$Compiler" -eq "10.4")) {  # If XE2, XE6, 10.4
+    if ($Compiler -eq "XE2" -or $Compiler -eq "XE6" -or $Compiler -eq "10.4") {  # If XE2, XE6, 10.4
         $LogText = Find-InFile -Path "$LogFile" -Find "Build succeeded."  # Search log file for "Build succeeded." string
         if ("$LogText" -ne "1") {  # If not found
             $LogText = Find-InFile -Path "$LogFile" -Find "Build FAILED."  # Search log file for "Build FAILED." string
@@ -1077,10 +1077,16 @@ try {  #
                 $VAR_RESULT_TEXT = $VAR_RESULT_TEXT.Replace('/', ' ')  # Turn strip any / from VAR_RESULT_TEXT
                 $VAR_RESULT_TEXT = ("$VAR_RESULT_TEXT").Trim()  # Trim VAR_RESULT_TEXT
                 # Script block (JScript): Set SOURCE_CONTROL_VERSION to the higher of SOURCE_CONTROL_VERSION and the one just read
-                # Converted from DelphiScript: Set SOURCE_CONTROL_VERSION to the higher of SOURCE_CONTROL_VERSION and the one just read
-                # --- REVIEW THIS CONVERSION ---
-                # DELPHI: //////////////////////////////////////////////////// //           Default script code. JScript         // //            SmartBear Software (c) 2013         // ////////////////////////////////////////////////////      // return true if 'oldversion' is greater than or equal to 'newversion'.     function compareVersions(oldversion, newversion) {          var a = oldversion.split('.');         var b = newversion.split('.');          for (var i = 0; i < 4; ++i) {           if (i < a.length) {             a[i] = Number(a[i]);           } else {             a[i] = 0;           }         }         for (var i = 0; i < 4; ++i) {           if (i < b.length) {             b[i] = Number(b[i]);           } else {             b[i] = 0;           }         }          if (a[0] > b[0]) return true;         if (a[0] < b[0]) return false;          if (a[1] > b[1]) return true;         if (a[1] < b[1]) return false;          if (a[2] > b[2]) return true;         if (a[2] < b[2]) return false;          if (a[3] > b[3]) return true;         if (a[3] < b[3]) return false;          return true;     }  function Main() {   var oldv = Variables.SOURCE_CONTROL_VERSION;   var newv = Variables.VAR_RESULT_TEXT;    if ((/^\d+[0-9.]*$/.test(newv)) && (!compareVersions(oldv, newv))) {     Log.Message("greater")     Variables.SOURCE_CONTROL_VERSION = newv;    } else {     Log.Message("smaller")   } }
-                # --- END DELPHISCRIPT (manual conversion required) ---
+                if ($VAR_RESULT_TEXT -match '^\d+(?:\.\d+){0,3}$') {
+                    [version]$newVersion = $VAR_RESULT_TEXT
+                    [version]$oldVersion = '0.0.0.0'
+                    if ($SOURCE_CONTROL_VERSION -match '^\d+(?:\.\d+){0,3}$') {
+                        [version]$oldVersion = $SOURCE_CONTROL_VERSION
+                    }
+                    if ($newVersion -gt $oldVersion) {
+                        $SOURCE_CONTROL_VERSION = $VAR_RESULT_TEXT
+                    }
+                }
                 # [DISABLED] Log Message
             }
         }
@@ -1093,10 +1099,16 @@ try {  #
                 $VAR_RESULT_TEXT = $VAR_RESULT_TEXT.Replace('/', ' ')  # Turn strip any / from VAR_RESULT_TEXT
                 $VAR_RESULT_TEXT = ("$VAR_RESULT_TEXT").Trim()  # Trim VAR_RESULT_TEXT
                 # Script block (JScript): Set SOURCE_CONTROL_VERSION to the higher of SOURCE_CONTROL_VERSION and the one just read
-                # Converted from DelphiScript: Set SOURCE_CONTROL_VERSION to the higher of SOURCE_CONTROL_VERSION and the one just read
-                # --- REVIEW THIS CONVERSION ---
-                # DELPHI: //////////////////////////////////////////////////// //           Default script code. JScript         // //            SmartBear Software (c) 2013         // ////////////////////////////////////////////////////      // return true if 'oldversion' is greater than or equal to 'newversion'.     function compareVersions(oldversion, newversion) {          var a = oldversion.split('.');         var b = newversion.split('.');          for (var i = 0; i < 4; ++i) {           if (i < a.length) {             a[i] = Number(a[i]);           } else {             a[i] = 0;           }         }         for (var i = 0; i < 4; ++i) {           if (i < b.length) {             b[i] = Number(b[i]);           } else {             b[i] = 0;           }         }          if (a[0] > b[0]) return true;         if (a[0] < b[0]) return false;          if (a[1] > b[1]) return true;         if (a[1] < b[1]) return false;          if (a[2] > b[2]) return true;         if (a[2] < b[2]) return false;          if (a[3] > b[3]) return true;         if (a[3] < b[3]) return false;          return true;     }  function Main() {   var oldv = Variables.SOURCE_CONTROL_VERSION;   var newv = Variables.VAR_RESULT_TEXT;    if ((/^\d+[0-9.]*$/.test(newv)) && (!compareVersions(oldv, newv))) {     Log.Message("greater")     Variables.SOURCE_CONTROL_VERSION = newv;    } else {     Log.Message("smaller")   } }
-                # --- END DELPHISCRIPT (manual conversion required) ---
+                if ($VAR_RESULT_TEXT -match '^\d+(?:\.\d+){0,3}$') {
+                    [version]$newVersion = $VAR_RESULT_TEXT
+                    [version]$oldVersion = '0.0.0.0'
+                    if ($SOURCE_CONTROL_VERSION -match '^\d+(?:\.\d+){0,3}$') {
+                        [version]$oldVersion = $SOURCE_CONTROL_VERSION
+                    }
+                    if ($newVersion -gt $oldVersion) {
+                        $SOURCE_CONTROL_VERSION = $VAR_RESULT_TEXT
+                    }
+                }
                 # [DISABLED] Log Message
             }
         }
@@ -1447,11 +1459,14 @@ try {  #
         }
         if (("$PASQL_SCRIPTS_HAVE_CHANGED" -ne "TRUE") -and ("$VAR_RESULT" -ne "0")) {  # If not PASQL_SCRIPTS_HAVE_CHANGED yet set
             $SETUP_PASQL_DATE = (Get-Item "$SETUP_PASQL_FILE_NAME").LastWriteTime.ToString()  # Set SETUP_PASQL_DATE from setup.pasql file
-            # Script block (DelphiScript): 
-            # Converted from DelphiScript: 
-            # --- REVIEW THIS CONVERSION ---
-            # DELPHI: //////////////////////////////////////////////////// //        Default script code. DelphiScript       // //             AutomatedQA Corp (c) 2012          // ////////////////////////////////////////////////////  procedure Main; var   SetupDate: TDateTime;   BuildDate: TDateTime; begin   SetupDate := Utilities.StrToDateTime(VARIABLES.SETUP_PASQL_DATE);   BuildDate := Utilities.StrToDateTime(VARIABLES.LAST_BUILD_DATE_TIME);    // if setup.pasql has changed sinse the last build   if SetupDate >= BuildDate then   begin     VARIABLES.PASQL_SCRIPTS_HAVE_CHANGED := 'TRUE';     //Log.Message('SetupDate: ' + VARIABLES.SETUP_PASQL_DATE + ', FileDate: ' + VARIABLES.TEMP_VAR);   end; end;
-            # --- END DELPHISCRIPT (manual conversion required) ---
+            # Script block (DelphiScript): Compare setup and last-build dates
+            $setupDate = [datetime]::MinValue
+            $buildDate = [datetime]::MinValue
+            if ([datetime]::TryParse("$SETUP_PASQL_DATE", [ref]$setupDate) -and [datetime]::TryParse("$LAST_BUILD_DATE_TIME", [ref]$buildDate)) {
+                if ($setupDate -ge $buildDate) {
+                    $PASQL_SCRIPTS_HAVE_CHANGED = "TRUE"
+                }
+            }
             if (("$PASQL_SCRIPTS_HAVE_CHANGED" -ne "TRUE") -and ("$VAR_RESULT" -ne "0")) {  # If not PASQL_SCRIPTS_HAVE_CHANGED yet set
                 $VAR_RESULT = 0
                 foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\scripts\*.pasql" -ErrorAction SilentlyContinue)) {  # Compare modification date of each PASQL file with SETUP_PASQ_DATE
@@ -1459,11 +1474,14 @@ try {  #
                     $VAR_RESULT++
                     if ("$VAR_RESULT_TEXT" -ne "$SETUP_PASQL_FILE_NAME") {  # If a more recent file found set PASQL_SCRIPTS_HAVE_CHANGED to TRUE
                         $TEMP_VAR = (Get-Item "$VAR_RESULT_TEXT").LastWriteTime.ToString()  # Get last modified date of each PASQL
-                        # Script block (DelphiScript): 
-                        # Converted from DelphiScript: 
-                        # --- REVIEW THIS CONVERSION ---
-                        # DELPHI: //////////////////////////////////////////////////// //        Default script code. DelphiScript       // //             AutomatedQA Corp (c) 2012          // ////////////////////////////////////////////////////  procedure Main; var   SetupDate: TDateTime;   FileDate: TDateTime; begin   SetupDate := Utilities.StrToDateTime(VARIABLES.SETUP_PASQL_DATE);   FileDate := Utilities.StrToDateTime(VARIABLES.TEMP_VAR);    // note: in case a script has the *same* modification date as the setup.pasq   //       (such as when a new project has been created) then the PASQL_SCRIPT_HAS_CHANGED   //       will be set to TRUE so that the correct version numbers will be set   if FileDate >= SetupDate then   begin     VARIABLES.PASQL_SCRIPTS_HAVE_CHANGED := 'TRUE';     //Log.Message('SetupDate: ' + VARIABLES.SETUP_PASQL_DATE + ', FileDate: ' + VARIABLES.TEMP_VAR);   end; end;
-                        # --- END DELPHISCRIPT (manual conversion required) ---
+                        # Script block (DelphiScript): Compare PASQL file date and setup date
+                        $setupDate = [datetime]::MinValue
+                        $fileDate = [datetime]::MinValue
+                        if ([datetime]::TryParse("$SETUP_PASQL_DATE", [ref]$setupDate) -and [datetime]::TryParse("$TEMP_VAR", [ref]$fileDate)) {
+                            if ($fileDate -ge $setupDate) {
+                                $PASQL_SCRIPTS_HAVE_CHANGED = "TRUE"
+                            }
+                        }
                         if ("$PASQL_SCRIPTS_HAVE_CHANGED" -eq "TRUE") {
                             break
                         }
@@ -1507,10 +1525,7 @@ try {  #
             #region Update project files
             Write-Log "--- Update project files ---"
             # Script block (DelphiScript): Build project icon name
-            # Converted from DelphiScript: Build project icon name
-            # --- REVIEW THIS CONVERSION ---
-            # DELPHI: procedure Main; var   st: OleVariant; begin   st := MkSet(rfReplaceAll, rfIgnoreCase);   Variables.ICON_FILE_NAME := Utilities.StringReplace(Variables.PROJECT_TITLE, ' ', '', st) + '.ico'; end;
-            # --- END DELPHISCRIPT (manual conversion required) ---
+            $ICON_FILE_NAME = ($PROJECT_TITLE -replace '\s+', '') + ".ico"
             if (Test-Path "$BUILD_TEMP_PATH\source\$ICON_FILE_NAME") {  # Check if source\ICON_FILE_NAME file exists
             } else {
                 Invoke-VaultGetLatest -Repository "SDG" -Path "$/Framework/Icons/APAICON.ico" -LocalFolder "$BUILD_TEMP_PATH\source"  # Get APAICON.ico (for building RES files)
@@ -1790,13 +1805,17 @@ try {  #
                     Write-Log "--- Check that PAUnitCMD is not older than MockDatabaseSettings.pas ---"
                     if ("$NIGHTLY_BUILD" -ne "TRUE") {  # If not nightly build
                         $PA_UNIT_DATE = (Get-Item "$PA_UNIT_FILE_NAME").LastWriteTime.ToString()  # Get modification date of PAUnitCMD.exe
-                        Invoke-VaultCommand -Repository "SDG" -Command "LISTOBJECTPROPERTIES" -Parameters "`"$/PA Internal/PA Unit Testing/Trunk/Source/Framework/Test/MockDatabaseSettings.pas`""  # Get MockDatabaseSettings.pas modification date
+                        $MOCK_SETTINGS_DATE = Invoke-VaultCommand -Repository "SDG" -Command "LISTOBJECTPROPERTIES" -Parameters "`"$/PA Internal/PA Unit Testing/Trunk/Source/Framework/Test/MockDatabaseSettings.pas`""  # Get MockDatabaseSettings.pas modification date
                         $MOCK_SETTINGS_DATE = Get-SubstringBetween -Input "$MOCK_SETTINGS_DATE" -Start "<modifieddate>" -End "</modifieddate>"  # Extract date
                         # Script block (DelphiScript): Compare dates
-                        # Converted from DelphiScript: Compare dates
-                        # --- REVIEW THIS CONVERSION ---
-                        # DELPHI: //////////////////////////////////////////////////// //        Default script code. DelphiScript       // //             AutomatedQA Corp (c) 2012          // ////////////////////////////////////////////////////  procedure Main; var   PAUnitDate: TDateTime;   MockSettingsDate: TDateTime; begin   VARIABLES.PAUNIT_TOO_OLD := 'FALSE';    PAUnitDate := Utilities.StrToDateTime(VARIABLES.PA_UNIT_DATE);   MockSettingsDate := Utilities.StrToDateTime(VARIABLES.MOCK_SETTINGS_DATE);    if PAUnitDate < MockSettingsDate then   begin     VARIABLES.PAUNIT_TOO_OLD := 'TRUE';   end; end;
-                        # --- END DELPHISCRIPT (manual conversion required) ---
+                        $PAUNIT_TOO_OLD = "FALSE"
+                        $paUnitDate = [datetime]::MinValue
+                        $mockSettingsDate = [datetime]::MinValue
+                        if ([datetime]::TryParse("$PA_UNIT_DATE", [ref]$paUnitDate) -and [datetime]::TryParse("$MOCK_SETTINGS_DATE", [ref]$mockSettingsDate)) {
+                            if ($paUnitDate -lt $mockSettingsDate) {
+                                $PAUNIT_TOO_OLD = "TRUE"
+                            }
+                        }
                         if ("$PAUNIT_TOO_OLD" -eq "TRUE") {  # If PAUnitCMD too old
                             $CONTINUE_WITH_OLD = Confirm-Action -Message "PAUnitCMD.exe is older than the MockDatabaseSettings.pas file and should be rebuilt first (PA Unit Testing project). PAUnitCMD.exe date: $PA_UNIT_DATE MockDatabaseSettings.pas date: $MOCK_SETTINGS_DATE  Continue with the old PAUnitCMD.exe?" -Default "True"  # 
                             if ("$CONTINUE_WITH_OLD" -ne "TRUE") {
@@ -1940,13 +1959,11 @@ try {  #
                     if ("$VAR_RESULT" -ceq "-2") {  # TODO: does timeout always return -2?
                         $EXCEPTION_MESSAGE = "Test did not complete in 1 hour"
                     }
-                    # Script block (DelphiScript): 
-                    # Converted from DelphiScript: 
-                    # --- REVIEW THIS CONVERSION ---
-                    # DELPHI: //////////////////////////////////////////////////// //        Default script code. DelphiScript       // //             AutomatedQA Corp (c) 2012          // ////////////////////////////////////////////////////  procedure Main; begin   VARIABLES.CURRENT_PROCESS := Utilities.ExtractFileName(VARIABLES.TEMP_VAR);  end;
-                    # --- END DELPHISCRIPT (manual conversion required) ---
-                    if (Get-Process -Name "$CURRENT_PROCESS" -ErrorAction SilentlyContinue) {  # 
-                        Stop-Process -Name "$CURRENT_PROCESS" -Force -ErrorAction SilentlyContinue  # Terminate running test
+                    # Script block (DelphiScript): set CURRENT_PROCESS from TEMP_VAR
+                    $CURRENT_PROCESS = [System.IO.Path]::GetFileName("$TEMP_VAR")
+                    $CURRENT_PROCESS_NAME = [System.IO.Path]::GetFileNameWithoutExtension("$CURRENT_PROCESS")
+                    if (Get-Process -Name "$CURRENT_PROCESS_NAME" -ErrorAction SilentlyContinue) {  # 
+                        Stop-Process -Name "$CURRENT_PROCESS_NAME" -Force -ErrorAction SilentlyContinue  # Terminate running test
                     }
                 }
                 $VAR_RESULT_TEXT = Get-Content -Path "$TEMP_VAR.log" -Raw  # 
@@ -1992,11 +2009,13 @@ try {  #
         } else {
             $DPR_FILE_DATE = "$SOURCE_CONTROL_LABEL"
         }
-        # Script block (DelphiScript): 
-        # Converted from DelphiScript: 
-        # --- REVIEW THIS CONVERSION ---
-        # DELPHI: //////////////////////////////////////////////////// //        Default script code. DelphiScript       // //            SmartBear Software (c) 2015         // ////////////////////////////////////////////////////  procedure Main; var   s: string;   d: TDateTime; begin   s := Variables.DPR_FILE_DATE;   try     s := Copy(s, Pos('-', s) + 1, Length(s));     s := Trim(Copy(s, Pos('-', s) + 1, Length(s)));     d := StrToDateTime(s); // '23/04/2014 3:44:21 PM'     s := FormatDateTime('YYYY-MM-DD', d) + 'T' + FormatDateTime('hh:mm:SS', d);     Variables.DPR_FILE_DATE := s;   except     Variables.DPR_FILE_DATE := '';   end; end;
-        # --- END DELPHISCRIPT (manual conversion required) ---
+        # Script block (DelphiScript): normalize DPR_FILE_DATE for touch.exe
+        $parsedDprDate = [datetime]::MinValue
+        if ([datetime]::TryParse("$DPR_FILE_DATE", [System.Globalization.CultureInfo]::CurrentCulture, [System.Globalization.DateTimeStyles]::None, [ref]$parsedDprDate)) {
+            $DPR_FILE_DATE = $parsedDprDate.ToString("yyyy-MM-ddTHH:mm:ss")
+        } else {
+            $DPR_FILE_DATE = ""
+        }
         if ("$DPR_FILE_DATE" -ne "") {
             Invoke-DosCommand -Command "`"C:\Freeware\touch.exe`" -a -m -x -d$DPR_FILE_DATE `"$BUILD_TEMP_PATH\*.exe`"" -WorkingDirectory "$BUILD_TEMP_PATH"  # 
             Invoke-DosCommand -Command "`"C:\Freeware\touch.exe`" -a -m -x -d$DPR_FILE_DATE `"$BUILD_TEMP_PATH\debug\*.exe`"" -WorkingDirectory "$BUILD_TEMP_PATH"  # 
@@ -2063,10 +2082,10 @@ try {  #
             $TEMP_VAR_3 = "$PROJECT_TITLE Setup v$TEMP_VAR.exe"  # Set TEMP_VAR_3
             Write-Log "Build the final setup name into TEMP_VAR_3"
             # Script block (DelphiScript): Build the Wise install string into TEMP_VAR_2
-            # Converted from DelphiScript: Build the Wise install string into TEMP_VAR_2
-            # --- REVIEW THIS CONVERSION ---
-            # DELPHI: //////////////////////////////////////////////////// //        Default script code. DelphiScript       // //             AutomatedQA Corp (c) 2012          // ////////////////////////////////////////////////////  uses   Utilities;  procedure Main; var   M, D;   CurrentYear;   Path; begin   DecodeDate(Date, CurrentYear, M, D);    //Log.Message(Variables.BUILD_TEMP_PATH);   Path := IncludeTrailingBackslash(Variables.BUILD_TEMP_PATH) + 'Setup\';   Log.Message(Path);    // "C:\Program Files (x86)\Wise Installation System\Wise32.exe" /d_PA_VERSION_="5.2.2.0" /d_PA_COPYRIGHT_YEAR_="2012" /c /s "C:\Builds\Under Development\Advanced Inquiry\5.3.0\BuildStudio_Build\Setup\Standard Setup.wse"   Variables.TEMP_VAR_2 := '"C:\Program Files (x86)\Wise Installation System\Wise32.exe"' +   //  ' /d_PA_VERSION_="' + Variables.TEMP_VAR + '" /d_PA_COPYRIGHT_YEAR_="' + IntToStr(CurrentYear) + '" /c /s' +     ' /d_PA_VERSION_="' + Variables.TEMP_VAR + '" /d_PA_COPYRIGHT_YEAR_="' + IntToStr(CurrentYear) + '" /c' +     ' "' + Path + 'Standard Setup.wse"';    //Log.Message(Variables.TEMP_VAR_2); end;
-            # --- END DELPHISCRIPT (manual conversion required) ---
+            $setupPath = Join-Path "$BUILD_TEMP_PATH" "Setup"
+            $currentYearForSetup = if ($CURRENT_YEAR) { $CURRENT_YEAR } else { (Get-Date).Year }
+            Write-Log "$setupPath\"
+            $TEMP_VAR_2 = "`"C:\Program Files (x86)\Wise Installation System\Wise32.exe`" /d_PA_VERSION_=`"$TEMP_VAR`" /d_PA_COPYRIGHT_YEAR_=`"$currentYearForSetup`" /c `"$setupPath\Standard Setup.wse`""
             New-Item -ItemType Directory -Path "$BUILD_TEMP_PATH\builds" -Force | Out-Null  # Create directory for the final builds
             # LABEL: EXE build  (GoTo not supported in PS - restructure logic)
             Invoke-DosCommand -Command "$TEMP_VAR_2" -WorkingDirectory "$BUILD_TEMP_PATH\setup"  # Run Wise script
@@ -2240,16 +2259,11 @@ try {  #
                 Replace-InFile -Path "$PA_FRAMEWORK_FOLDER\Compiled Resources\Server\CopyServerClientDll.bat" -Find "^pause" -Replace "echo done!"  # 
                 Invoke-DosCommand -Command "$PA_FRAMEWORK_FOLDER\Compiled Resources\Server\CopyServerClientDll.bat`"" -WorkingDirectory "$PA_FRAMEWORK_FOLDER\Compiled Resources\Server"  # Copy resources
                 # Script block (JScript): Set SOURCE_CONTROL_TRUNK_PATH
-                # Converted from DelphiScript: Set SOURCE_CONTROL_TRUNK_PATH
-                # --- REVIEW THIS CONVERSION ---
-                # DELPHI: //////////////////////////////////////////////////// //           Default script code. JScript         // //            SmartBear Software (c) 2018         // ////////////////////////////////////////////////////  function Main() {   // strip "/delphi" from the path - SOURCE_CONTROL_SOURCE_PATH=%SOURCE_CONTROL_ROOT_PATH%%PROJECT_TITLE%/Trunk/Delphi   var str = Variables.SOURCE_CONTROL_SOURCE_PATH;   Variables.SOURCE_CONTROL_TRUNK_PATH = str.replace(/\/delphi$/i, ""); }
-                # --- END DELPHISCRIPT (manual conversion required) ---
+                $normalizedSourceControlPath = ("$SOURCE_CONTROL_SOURCE_PATH").Replace('\', '/')
+                $SOURCE_CONTROL_TRUNK_PATH = [regex]::Replace("$normalizedSourceControlPath", "/delphi$", "", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
                 $PROJECT_LABEL_PATH = "$SOURCE_CONTROL_TRUNK_PATH"  # set PROJECT_LABEL_PATH
                 # Script block (JScript): Set SOURCE_CONTROL_VISUAL_STUDIO_PATH
-                # Converted from DelphiScript: Set SOURCE_CONTROL_VISUAL_STUDIO_PATH
-                # --- REVIEW THIS CONVERSION ---
-                # DELPHI: //////////////////////////////////////////////////// //           Default script code. JScript         // //            SmartBear Software (c) 2018         // ////////////////////////////////////////////////////  function Main() {   // strip "/delphi" from the path - SOURCE_CONTROL_SOURCE_PATH=%SOURCE_CONTROL_ROOT_PATH%%PROJECT_TITLE%/Trunk/Delphi   var str = Variables.SOURCE_CONTROL_SOURCE_PATH;   Variables.SOURCE_CONTROL_VISUAL_STUDIO_PATH = str.replace(/\/delphi$/i, "") + '/Visual Studio'; }
-                # --- END DELPHISCRIPT (manual conversion required) ---
+                $SOURCE_CONTROL_VISUAL_STUDIO_PATH = "$SOURCE_CONTROL_TRUNK_PATH/Visual Studio"
                 # [DISABLED] Vault Cloak (Cloak SOURCE_CONTROL_SOURCE_PATH) - Cloak SOURCE_CONTROL_SOURCE_PATH
                 $PA_FRAMEWORK_FOLDER = "$BUILD_TEMP_PATH\..\..\..\..\Framework\VisualStudio\PA.FrameWork\Trunk"  # Set PA_FRAMEWORK_FOLDER to %BUILD_TEMP_PATH%\..\..\..\..\Framework\VisualStudio\PA.FrameWork\Trunk
                 if (Test-Path "$PA_FRAMEWORK_FOLDER") {  # %PA_FRAMEWORK_FOLDER%
@@ -2557,11 +2571,8 @@ try {  #
 
         #region Update last build date in ini file
         Write-Log "--- Update last build date in ini file ---"
-        # Script block (DelphiScript): 
-        # Converted from DelphiScript: 
-        # --- REVIEW THIS CONVERSION ---
-        # DELPHI: //////////////////////////////////////////////////// //        Default script code. DelphiScript       // //             AutomatedQA Corp (c) 2012          // ////////////////////////////////////////////////////  procedure Main; begin   VARIABLES.LAST_BUILD_DATE_TIME := Utilities.DateTimeToStr(Now); end;
-        # --- END DELPHISCRIPT (manual conversion required) ---
+        # Script block (DelphiScript): update LAST_BUILD_DATE_TIME
+        $LAST_BUILD_DATE_TIME = (Get-Date).ToString()
         Set-IniValue -Path "$BUILD_INI" -Section "$INI_SECTION" -Key "LAST_BUILD_DATE_TIME" -Value "$LAST_BUILD_DATE_TIME"  # Set LAST_BUILD_DATE_TIME
         Set-IniValue -Path "$BUILD_INI" -Section "$INI_SECTION" -Key "LAST_BUILD_VERSION" -Value "$LAST_BUILD_VERSION"  # Set LAST_BUILD_VERSION
         #endregion Update last build date in ini file
@@ -2576,10 +2587,10 @@ try {  #
             $LABEL = "$INI_SECTION - build $BUILD_VERSION - $LAST_BUILD_DATE_TIME"  # Set LABEL
             Invoke-VaultLabel -Repository "SDG" -Path "$PROJECT_LABEL_PATH" -Label "$LABEL"  # PROJECT_LABEL_PATH
             # Script block (DelphiScript): generate framework path
-            # Converted from DelphiScript: generate framework path
-            # --- REVIEW THIS CONVERSION ---
-            # DELPHI: //////////////////////////////////////////////////// //        Default script code. DelphiScript       // //            SmartBear Software (c) 2016         // ////////////////////////////////////////////////////  procedure Main; var   st, s: OleVariant; begin   st := MkSet(rfReplaceAll, rfIgnoreCase);    Variables.FRAMEWORK_PATH := '';    if Pos('BANK', Utilities.UpperCase(Variables.PROJECT_TITLE)) = 1 then // Bank Reconciliation   begin   //  Variables.FRAMEWORK_PATH := Constants.PA_VS_FRAMEWORK_PATH + '/Source/PA.Applications/' +   //    Utilities.StringReplace(Variables.PROJECT_TITLE, ' ', '', st) + '/';     Variables.FRAMEWORK_PATH := Constants.PA_VS_FRAMEWORK_PATH;   end; end;   end;
-            # --- END DELPHISCRIPT (manual conversion required) ---
+            $FRAMEWORK_PATH = ""
+            if ($PROJECT_TITLE -like "BANK*") {
+                $FRAMEWORK_PATH = "$PA_VS_FRAMEWORK_PATH"
+            }
             Invoke-VaultLabel -Repository "SDG" -Path "$FRAMEWORK_PATH" -Label "$LABEL"  # Label framework
             # [DISABLED] Vault Label (Label framework (PA.Blazor.Components)) - Label framework (PA.Blazor.Components)
         } else {
