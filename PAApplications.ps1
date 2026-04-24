@@ -1187,7 +1187,7 @@ try {  #
             # [DISABLED] Try
             # [DISABLED] Catch
             Invoke-VaultCommand -Repository "SDG" -Command "SETWORKINGFOLDER" -Parameters "-forcesubfolderstoinherit  `"$SOURCE_CONTROL_SOURCE_PATH`" `"$BUILD_TEMP_PATH`""  # Set working folder
-            Invoke-VaultGetLatest -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/*"  # Get latest project source
+            Invoke-VaultGetLatest -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH"  # Get latest project source
         } else {
             Invoke-VaultGetByLabel -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/*" -Label "$SOURCE_CONTROL_LABEL" -LocalPath "$BUILD_TEMP_PATH"  # Get project source by label
         }
@@ -2125,8 +2125,8 @@ try {  #
 
         #region Get Source Control source files
         Write-Log "--- Get Source Control source files ---"
-        Invoke-VaultGetLatest -Repository "SDG" -Path "$/Non Delphi Projects/ActiveX/*" -LocalFolder "$BUILD_TEMP_PATH\ActiveX"  # Get PA Applications source
-        Invoke-VaultGetLatest -Repository "SDG" -Path "$/Products/ActiveX Launcher/*" -LocalFolder "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher"  # GetActiveX Launcher source
+        Invoke-VaultGetLatest -Repository "SDG" -Path "$/Non Delphi Projects/ActiveX" -LocalFolder "$BUILD_TEMP_PATH\ActiveX"  # Get PA Applications source
+        Invoke-VaultGetLatest -Repository "SDG" -Path "$/Products/ActiveX Launcher" -LocalFolder "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher"  # GetActiveX Launcher source
         #endregion Get Source Control source files
 
 
@@ -2245,7 +2245,7 @@ try {  #
                 } catch {  # 
                 }
                 if ("$SOURCE_CONTROL_LABEL" -ceq "") {  # If SOURCE_CONTROL_LABEL not set
-                    Invoke-VaultGetLatest -Repository "SDG" -Path "$PA_VS_FRAMEWORK_PATH/*" -LocalFolder "$PA_FRAMEWORK_FOLDER"  # Get Framework Code into %PA_FRAMEWORK_FOLDER%
+                    Invoke-VaultGetLatest -Repository "SDG" -Path "$PA_VS_FRAMEWORK_PATH" -LocalFolder "$PA_FRAMEWORK_FOLDER"  # Get Framework Code into %PA_FRAMEWORK_FOLDER%
                 } else {
                     Invoke-VaultGetByLabel -Repository "SDG" -Path "$PA_VS_FRAMEWORK_PATH/*" -Label "$SOURCE_CONTROL_LABEL" -LocalPath "$PA_FRAMEWORK_FOLDER"  # Get Framework Code by label  into %PA_FRAMEWORK_FOLDER%
                 }
@@ -2290,8 +2290,8 @@ try {  #
                             Remove-ItemSafe -Path "$BUILD_TEMP_PATH\..\Visual Studio" -Recurse  # Delete old files if they exist
                         }
                     }
-                    Invoke-VaultGetLatest -Repository "SDG" -Path "$SOURCE_CONTROL_VISUAL_STUDIO_PATH/*" -LocalFolder "$BUILD_TEMP_PATH\..\Visual Studio"  # Get latest project source Visual Studio
-                    Invoke-VaultGetLatest -Repository "SDG" -Path "$SOURCE_CONTROL_TRUNK_PATH/BankRecDllLoader/*" -LocalFolder "$BUILD_TEMP_PATH\..\BankRecDllLoader"  # Get latest project source BankRecDllLoader
+                    Invoke-VaultGetLatest -Repository "SDG" -Path "$SOURCE_CONTROL_VISUAL_STUDIO_PATH" -LocalFolder "$BUILD_TEMP_PATH\..\Visual Studio"  # Get latest project source Visual Studio
+                    Invoke-VaultGetLatest -Repository "SDG" -Path "$SOURCE_CONTROL_TRUNK_PATH/BankRecDllLoader" -LocalFolder "$BUILD_TEMP_PATH\..\BankRecDllLoader"  # Get latest project source BankRecDllLoader
                     Invoke-DosCommand -Command "`"$PA_FRAMEWORK_FOLDER\Source\.nuget\NuGet.exe`" restore `"$BUILD_TEMP_PATH\..\Visual Studio\BankReconciliation.sln`""  # Download project packages
                     # [DISABLED] Execute DOS Command (Download project packages) - Download project packages
 
