@@ -337,6 +337,19 @@ function Get-VaultAuthArgs {
     return $authArgs
 }
 
+function Get-VaultWorkingFolder {
+    param([string]$Repository, [string]$ReposPath)
+    $auth = Get-VaultAuthArgs
+    $output = (& $script:VaultExe listworkingfolders @auth -repository $Repository 2>$null) -join "`n"
+    try {
+        $xml = [xml]$output
+        $wf = $xml.vault.listworkingfolders.workingfolder | Where-Object { $_.reposfolder -eq $ReposPath }
+        return $wf ? $wf.localfolder : $null
+    } catch {
+        return $null
+    }
+}
+
 function Invoke-VaultCheckOut {
     param([string]$Repository, [string]$Path, [string]$Host)
     Write-Log "Vault CheckOut: $Path"
@@ -350,7 +363,16 @@ function Invoke-VaultGetLatest {
     param([string]$Repository, [string]$Path, [string]$LocalFolder)
     Write-Log "Vault GetLatest: $Path"
     $auth = Get-VaultAuthArgs
-    $destArg = if ($LocalFolder) { @('-destpath', $LocalFolder) } else { @('-destpath', '.') }
+    $mappedFolder = Get-VaultWorkingFolder -Repository $Repository -ReposPath $Path
+    # Omit -destpath when a working folder is already mapped and matches the target;
+    # using -destpath with the same path causes "GetToLocationOutsideWorkingFolder" errors.
+    $destArg = if ($mappedFolder -and (-not $LocalFolder -or $LocalFolder -eq $mappedFolder)) {
+        @()
+    } elseif ($LocalFolder) {
+        @('-destpath', $LocalFolder)
+    } else {
+        @('-destpath', '.')
+    }
     & $script:VaultExe get @auth -repository $Repository @destArg `"$Path`"
     if ($LASTEXITCODE -ne 0) { throw "Vault get latest failed: $Path" }
 }
@@ -2376,7 +2398,7 @@ try {  #
                     }
                 }
             } catch {  # 
-                Invoke-VaultUndoCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_VISUAL_STUDIO_PATH/*"  # Undo check out
+                Invoke-VaultUndoCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_VISUAL_STUDIO_PATH"  # Undo check out
                 throw "$EXCEPTION_MESSAGE"
             }
             #endregion Build Bank Reconciliation setup
@@ -2593,7 +2615,7 @@ try {  #
             Invoke-VaultLabel -Repository "SDG" -Path "$FRAMEWORK_PATH" -Label "$LABEL"  # Label framework
             # [DISABLED] Vault Label (Label framework (PA.Blazor.Components)) - Label framework (PA.Blazor.Components)
         } else {
-            Invoke-VaultUndoCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/*"  # (nothing should be checked out here anyway)
+            Invoke-VaultUndoCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH"  # (nothing should be checked out here anyway)
         }
         #endregion Commit Source Control changes
 
@@ -2684,7 +2706,7 @@ try {  #
     #region Handle errors
     Write-Log "--- Handle errors ---"
     if ("$VAR_RESULT_TEXT" -ne "Unable to locate project in Source Control") {  # If exception was not caused by invalid Source Control path
-        Invoke-VaultUndoCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/*"  # Undo check out
+        Invoke-VaultUndoCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH"  # Undo check out
     } else {
         $VAR_RESULT_TEXT = "$VAR_RESULT_TEXT, path $SOURCE_CONTROL_SOURCE_PATH"
     }
