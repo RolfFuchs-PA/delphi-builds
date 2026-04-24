@@ -363,17 +363,7 @@ function Invoke-VaultGetLatest {
     param([string]$Repository, [string]$Path, [string]$LocalFolder)
     Write-Log "Vault GetLatest: $Path"
     $auth = Get-VaultAuthArgs
-    $mappedFolder = Get-VaultWorkingFolder -Repository $Repository -ReposPath $Path
-    # Omit -destpath when a working folder is already mapped and matches the target;
-    # using -destpath with the same path causes "GetToLocationOutsideWorkingFolder" errors.
-    $destArg = if ($mappedFolder -and (-not $LocalFolder -or $LocalFolder -eq $mappedFolder)) {
-        @()
-    } elseif ($LocalFolder) {
-        @('-destpath', $LocalFolder)
-    } else {
-        @('-destpath', '.')
-    }
-    & $script:VaultExe get @auth -repository $Repository @destArg `"$Path`"
+    & $script:VaultExe get @auth -repository $Repository "$Path"
     if ($LASTEXITCODE -ne 0) { throw "Vault get latest failed: $Path" }
 }
 
