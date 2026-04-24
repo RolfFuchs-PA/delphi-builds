@@ -1171,7 +1171,7 @@ try {  #
     #region Get sources from Source Control
     Write-Log "--- Get sources from Source Control ---"
     if (Test-Path "$BUILD_TEMP_PATH") {  # If directory exists
-        Invoke-DosCommand -Command "takeown /F $BUILD_TEMP_PATH /R"  # Take ownership of it
+        Invoke-DosCommand -Command "takeown /F `"$BUILD_TEMP_PATH`" /R"  # Take ownership of it
     }
     try {  # 
         Remove-ItemSafe -Path "$BUILD_TEMP_PATH" -Recurse  # Delete old files if they exist
@@ -2237,7 +2237,7 @@ try {  #
             try {  # 
                 try {  # 
                     if (Test-Path "$PA_FRAMEWORK_FOLDER") {  # If directory exists
-                        Invoke-DosCommand -Command "takeown /F $PA_FRAMEWORK_FOLDER /R"  # Take ownership of it
+                        Invoke-DosCommand -Command "takeown /F `"$PA_FRAMEWORK_FOLDER`" /R"  # Take ownership of it
                     }
                     if (Test-Path "$PA_FRAMEWORK_FOLDER") {  # 
                         Remove-ItemSafe -Path "$PA_FRAMEWORK_FOLDER" -Recurse  # %PA_FRAMEWORK_FOLDER%
@@ -2256,7 +2256,7 @@ try {  #
                 # [DISABLED] Execute DOS Command (Compile Framework) - Compile Framework
                 # [DISABLED] If ... Then (Check for errors) - Check for errors
                 Replace-InFile -Path "$PA_FRAMEWORK_FOLDER\Compiled Resources\Server\CopyServerClientDll.bat" -Find "^pause" -Replace "echo done!"  # 
-                Invoke-DosCommand -Command "$PA_FRAMEWORK_FOLDER\Compiled Resources\Server\CopyServerClientDll.bat`"" -WorkingDirectory "$PA_FRAMEWORK_FOLDER\Compiled Resources\Server"  # Copy resources
+                Invoke-DosCommand -Command "`"$PA_FRAMEWORK_FOLDER\Compiled Resources\Server\CopyServerClientDll.bat`"" -WorkingDirectory "$PA_FRAMEWORK_FOLDER\Compiled Resources\Server"  # Copy resources
                 # Script block (JScript): Set SOURCE_CONTROL_TRUNK_PATH
                 $normalizedSourceControlPath = ("$SOURCE_CONTROL_SOURCE_PATH").Replace('\', '/')
                 $SOURCE_CONTROL_TRUNK_PATH = [regex]::Replace("$normalizedSourceControlPath", "/delphi$", "", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
@@ -2267,9 +2267,9 @@ try {  #
                 $PA_FRAMEWORK_FOLDER = "$BUILD_TEMP_PATH\..\..\..\..\Framework\VisualStudio\PA.FrameWork\Trunk"  # Set PA_FRAMEWORK_FOLDER to %BUILD_TEMP_PATH%\..\..\..\..\Framework\VisualStudio\PA.FrameWork\Trunk
                 if (Test-Path "$PA_FRAMEWORK_FOLDER") {  # %PA_FRAMEWORK_FOLDER%
                     try {  # 
-                        Invoke-DosCommand -Command "takeown /F $PA_FRAMEWORK_FOLDER /R"  # Take ownership of it
+                        Invoke-DosCommand -Command "takeown /F `"$PA_FRAMEWORK_FOLDER`" /R"  # Take ownership of it
                         Remove-ItemSafe -Path "$PA_FRAMEWORK_FOLDER" -Recurse  # 
-                        Invoke-DosCommand -Command "mkdir $PA_FRAMEWORK_FOLDER"  # mkdir %PA_FRAMEWORK_FOLDER%
+                        Invoke-DosCommand -Command "mkdir `"$PA_FRAMEWORK_FOLDER`""  # mkdir %PA_FRAMEWORK_FOLDER%
                     } catch {  # 
                     }
                 }
