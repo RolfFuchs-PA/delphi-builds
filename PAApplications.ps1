@@ -350,7 +350,7 @@ function Invoke-VaultGetLatest {
     param([string]$Repository, [string]$Path, [string]$LocalFolder)
     Write-Log "Vault GetLatest: $Path"
     $auth = Get-VaultAuthArgs
-    $destArg = $LocalFolder ? @('-destpath', $LocalFolder) : @()
+    $destArg = if ($LocalFolder) { @('-destpath', $LocalFolder) } else { @('-destpath', '.') }
     & $script:VaultExe get @auth -repository $Repository @destArg `"$Path`"
     if ($LASTEXITCODE -ne 0) { throw "Vault get latest failed: $Path" }
 }
