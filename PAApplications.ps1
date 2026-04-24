@@ -104,6 +104,7 @@ $TEMP_VAR_2 = ''
 $TEMP_VAR_3 = ''
 $ICON_FILE_NAME = ''
 $NEXT_PROJECT_TO_BUILD = '0'  # In case we need to build multiple projects Advanced/Archive Inquiry
+$script:VaultCheckedOut = $false  # Tracks whether Vault CheckOut was performed (used to guard UndoCheckOut on error)
 
 #----------------------------------------------------------------------
 # Vault Source Control Credentials
@@ -357,6 +358,7 @@ function Invoke-VaultCheckOut {
     if ($Host) { $auth[1] = $Host }
     & $script:VaultExe checkout @auth -repository $Repository `"$Path`"
     if ($LASTEXITCODE -ne 0) { throw "Vault checkout failed: $Path" }
+    $script:VaultCheckedOut = $true
 }
 
 function Invoke-VaultGetLatest {
@@ -2696,7 +2698,9 @@ try {  #
     #region Handle errors
     Write-Log "--- Handle errors ---"
     if ("$VAR_RESULT_TEXT" -ne "Unable to locate project in Source Control") {  # If exception was not caused by invalid Source Control path
-        Invoke-VaultUndoCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH"  # Undo check out
+        if ($script:VaultCheckedOut) {  # Only undo checkout if files were actually checked out
+            try { Invoke-VaultUndoCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH" } catch { Write-Log "Vault UndoCheckOut failed (best-effort): $_" }  # Undo check out (best-effort)
+        }
     } else {
         $VAR_RESULT_TEXT = "$VAR_RESULT_TEXT, path $SOURCE_CONTROL_SOURCE_PATH"
     }
