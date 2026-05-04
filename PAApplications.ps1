@@ -1083,7 +1083,7 @@ try {  #
         $SOURCE_CONTROL_LABEL = Get-IniValue -Path "${ABSOPENEDPROJECTDIR}PAApplications.ini" -Section "$INI_SECTION" -Key "SOURCE_CONTROL_LABEL"  # SOURCE_CONTROL_LABEL
         $SOURCE_CONTROL_VERSION = Get-IniValue -Path "${ABSOPENEDPROJECTDIR}PAApplications.ini" -Section "$INI_SECTION" -Key "SOURCE_CONTROL_VERSION"  # SOURCE_CONTROL_VERSION
         if ("$SOURCE_CONTROL_VERSION" -ceq "") {  # If SOURCE_CONTROL_VERSION not found in the ini file
-            foreach ($VAR_RESULT_TEXT in (Get-VaultFiles -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH" -Filter "dcc32.cfg")) {  # Loop through all dcc32.cfg files (nearly all projects have one)
+            foreach ($VAR_RESULT_TEXT in (Get-VaultFiles -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/Source" -Filter "dcc32.cfg")) {  # Loop through all dcc32.cfg files (nearly all projects have one)
                 $TEMP_VAR = "$VAR_RESULT_TEXT"  # Copy VAR_RESULT_TEXT into TEMP_VAR
                 $TEMP_VAR = $TEMP_VAR.Replace('/', '\')  # Turn TEMP_VAR into file path
                 $TEMP_VAR = Split-Path -Path "$TEMP_VAR" -Leaf  # Extract file name from TEMP_VAR
@@ -1105,7 +1105,7 @@ try {  #
             }
         }
         if ("$SOURCE_CONTROL_VERSION" -ceq "") {  # If SOURCE_CONTROL_VERSION not found in the dcc32.cfg file
-            foreach ($VAR_RESULT_TEXT in (Get-VaultFiles -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH" -Filter "*.ini")) {  # Loop through all INI files (nearly all projects have an ini file)
+            foreach ($VAR_RESULT_TEXT in (Get-VaultFiles -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/Source" -Filter "*.ini")) {  # Loop through all INI files (nearly all projects have an ini file)
                 $TEMP_VAR = "$VAR_RESULT_TEXT"  # Copy VAR_RESULT_TEXT into TEMP_VAR
                 $TEMP_VAR = $TEMP_VAR.Replace('/', '\')  # Turn TEMP_VAR into file path
                 $TEMP_VAR = Split-Path -Path "$TEMP_VAR" -Leaf  # Extract file name from TEMP_VAR
