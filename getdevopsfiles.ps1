@@ -33,8 +33,8 @@ $tennant = "e417d5cc-e5d8-4cad-b2cd-c5ef82dea0a0"
 $cred = New-Object System.Management.Automation.PSCredential -ArgumentList $env:BUILD_SIGN_P, ($env:BUILD_SIGN_S | ConvertTo-SecureString -AsPlainText -Force)
 Connect-AzAccount -ServicePrincipal -Credential $cred -Tenant $tennant
 
-$tempFolderPath = Join-Path $Env:Temp $(New-Guid); New-Item -Type Directory -Path $tempFolderPath | Out-Null
-if (Test-Path $tempFolderPath) { Remove-Item -Recurse -Force $tempFolderPath }
+$tempFolderPath = Join-Path $Env:Temp ([guid]::NewGuid().ToString()); New-Item -Type Directory -Path $tempFolderPath | Out-Null
+if (Test-Path $tempFolderPath) { Remove-Item -Recurse -Force $tempFolderPath -ErrorAction SilentlyContinue }
 New-Item -Type Directory -Path $tempFolderPath | Out-Null
 
 git clone --verbose --depth 1 $Repository $tempFolderPath

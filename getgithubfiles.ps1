@@ -35,7 +35,7 @@ if ($GitHubToken) {
     $repoUrl = $Repository -replace "https://github.com/", "https://${GitHubToken}@github.com/"
 }
 
-$tempFolderPath = Join-Path $Env:Temp $(New-Guid)
+$tempFolderPath = Join-Path $Env:Temp ([guid]::NewGuid().ToString())
 New-Item -Type Directory -Path $tempFolderPath | Out-Null
 
 try {
@@ -49,6 +49,6 @@ try {
 }
 finally {
     if (Test-Path $tempFolderPath) { 
-        Remove-Item -Recurse -Force $tempFolderPath 
+        Remove-Item -Recurse -Force $tempFolderPath -ErrorAction SilentlyContinue
     }
 }

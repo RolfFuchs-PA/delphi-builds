@@ -7,6 +7,42 @@ Converting a SmartBear BuildStudio .bxp build script (41K lines XML, 1,425 opera
 - **Converter** (`_converter.py`) handles all 77 operation types, generates ~2,700-line PS1
 - **Infrastructure working**: INI parsing, Vault auth (autobuild/autobuild), WinForms dialogs, project selection, Delphi version detection
 - **NOT working yet**: 25 embedded script blocks (DelphiScript/JScript/VBScript) are comments only — these contain critical build logic
+- **Refactor direction**: split `PAApplications.ps1` into smaller PowerShell modules so script-block conversions can be tested without running the full build
+- **Testing direction**: add per-module Pester tests, with Vault/Delphi/Wise/signing/network operations mocked
+
+## Revised Approach: Modularize for Testability
+
+Keep `PAApplications.ps1` as the thin orchestration entry point and move reusable logic into modules under `Modules\`. This should be done incrementally rather than as a big-bang rewrite: extract one coherent module, add tests, verify import/orchestration still works, then continue.
+
+### Proposed Module Layout
+
+| Module | Responsibility | Test Style |
+|--------|----------------|------------|
+| `Modules\PAConfig.psm1` | INI parsing/writing, variable interpolation, Delphi version detection, project config defaults | Unit tests with temporary INI files |
+| `Modules\PAVersion.psm1` | version parsing/comparison/incrementing, `.dproj`/`.dof` version extraction | Pure unit tests plus fixture files |
+| `Modules\PAFiles.psm1` | file copy/remove/replace helpers, XML helpers, path normalization | Unit tests with temp files |
+| `Modules\PADelphiBuild.psm1` | dcc config parsing, compiler path mapping, build command/script generation | Unit tests for generated commands/scripts |
+| `Modules\PAVault.psm1` | Vault auth and command wrappers | Mock command execution; assert vault args |
+| `Modules\PASigning.psm1` | wrapper around `signfile.ps1` | Mock signing call; assert file/description |
+| `Modules\PAInstallers.psm1` | Wise/InstallAware/MSI command construction and installer output handling | Mock process execution; assert commands |
+| `Modules\PATests.psm1` | PAUnit/test execution and log parsing | Unit tests for log parsing; mock process execution |
+
+### Proposed Test Layout
+
+```text
+Tests\
+  PAConfig.Tests.ps1
+  PAVersion.Tests.ps1
+  PAFiles.Tests.ps1
+  PADelphiBuild.Tests.ps1
+  PAVault.Tests.ps1
+  PASigning.Tests.ps1
+  PAInstallers.Tests.ps1
+  PATests.Tests.ps1
+  PAApplications.Smoke.Tests.ps1
+```
+
+The first tests should target pure logic: `PAVersion`, `PAConfig`, `PAFiles`, and `PADelphiBuild`. External integrations should be tested through mocks so the test suite does not require Vault access, Delphi compilers, Wise/InstallAware, certificates, or network shares.
 
 ## Build Pipeline (8 Phases)
 
@@ -138,6 +174,24 @@ Converting a SmartBear BuildStudio .bxp build script (41K lines XML, 1,425 opera
 - cross-project-loop: Verify Advanced→Archive Inquiry loop works
 - remove-debug-logging: Clean up [DEBUG] lines once stable
 - update-documentation: Update PAApplications.md with final state
+
+### Group D: Modularization
+- create-module-layout: Create `Modules\` and `Tests\` folders and establish import pattern from `PAApplications.ps1`
+- extract-version-module: Move version comparison, parsing, incrementing, and project-file extraction into `PAVersion.psm1`
+- extract-config-module: Move INI/config helpers and Delphi version detection into `PAConfig.psm1`
+- extract-file-module: Move file/XML/path helper functions into `PAFiles.psm1`
+- extract-delphi-build-module: Move compiler path mapping, dcc config parsing, and build command generation into `PADelphiBuild.psm1`
+- extract-integration-modules: Move Vault, signing, installer, and test-runner wrappers into dedicated modules
+- simplify-orchestrator: Reduce `PAApplications.ps1` to orchestration and phase flow after helper extraction
+
+### Group E: Pester Test Coverage
+- add-pester-harness: Add a minimal Pester test runner or documented test command using existing PowerShell tooling
+- test-version-module: Cover version compare/parse/increment and `.dproj`/`.dof` extraction
+- test-config-module: Cover INI interpolation, project config reads, defaults, and Delphi version detection
+- test-file-module: Cover replace helpers, XML helpers, and path normalization with temp files
+- test-delphi-build-module: Cover generated dcc/msbuild command strings and config parsing
+- test-integration-modules: Mock Vault/signfile/Wise/InstallAware/process calls and assert arguments
+- add-smoke-tests: Add import/parse smoke tests for all modules and the main orchestrator
 
 ---
 

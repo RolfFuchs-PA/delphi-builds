@@ -12,12 +12,14 @@ The conversion was performed using a Python-based converter (`_converter.py`) th
 
 ## Status
 
-> **✅ Conversion Complete**
+> **In progress**
 >
-> `PAApplications.ps1` is now fully converted to native PowerShell 7.0+ with no remaining DelphiScript/VBScript conversion markers.
+> `PAApplications.ps1` has been converted to PowerShell, but the conversion is still being stabilized. The current focus is splitting reusable logic into modules and adding tests so converted script blocks can be verified without running a full build.
 >
 > Notes:
-> - Vault helper command integrations still require environment-specific verification.
+> - Module extraction has started under `Modules\`.
+> - Per-module tests live under `Tests\` and can be run with `.\Invoke-Tests.ps1`.
+> - Vault, Delphi compiler, installer, signing, and network-share flows still require environment-specific verification.
 > - Encrypted credentials (Vault password) should still be migrated to a secure credential store.
 
 ## How to Run
@@ -61,3 +63,6 @@ On launch the script presents a project selection dialog, then a version increme
 | `PAApplications.ini` | Build configuration (project paths, settings) |
 | `_converter.py` | Python converter that generates the PS1 from the BXP |
 | `PAApplications.md` | This document |
+| `Modules\*.psm1` | Extracted helper modules for config, versioning, files, Delphi build commands, Vault, signing, installers, and test parsing |
+| `Tests\*.Tests.ps1` | Pester tests for the extracted modules |
+| `Invoke-Tests.ps1` | Test runner for the Pester suite |

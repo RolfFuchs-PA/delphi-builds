@@ -1,0 +1,110 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{817e71ca-deda-492b-8ca5-0a4bfe2de04b}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="Collect.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="CollectServer.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="CollectSearchSets.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="CollectScheduler.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="CollectSchedulerParams.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="CollectUpgrade.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="CollectTests.dproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <BorlandProject>
+                <Default.Personality/>
+            </BorlandProject>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="Collect">
+        <MSBuild Projects="Collect.dproj"/>
+    </Target>
+    <Target Name="Collect:Clean">
+        <MSBuild Projects="Collect.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="Collect:Make">
+        <MSBuild Projects="Collect.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="CollectServer">
+        <MSBuild Projects="CollectServer.dproj"/>
+    </Target>
+    <Target Name="CollectServer:Clean">
+        <MSBuild Projects="CollectServer.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="CollectServer:Make">
+        <MSBuild Projects="CollectServer.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="CollectSearchSets">
+        <MSBuild Projects="CollectSearchSets.dproj"/>
+    </Target>
+    <Target Name="CollectSearchSets:Clean">
+        <MSBuild Projects="CollectSearchSets.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="CollectSearchSets:Make">
+        <MSBuild Projects="CollectSearchSets.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="CollectScheduler">
+        <MSBuild Projects="CollectScheduler.dproj"/>
+    </Target>
+    <Target Name="CollectScheduler:Clean">
+        <MSBuild Projects="CollectScheduler.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="CollectScheduler:Make">
+        <MSBuild Projects="CollectScheduler.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="CollectSchedulerParams">
+        <MSBuild Projects="CollectSchedulerParams.dproj"/>
+    </Target>
+    <Target Name="CollectSchedulerParams:Clean">
+        <MSBuild Projects="CollectSchedulerParams.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="CollectSchedulerParams:Make">
+        <MSBuild Projects="CollectSchedulerParams.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="CollectUpgrade">
+        <MSBuild Projects="CollectUpgrade.dproj"/>
+    </Target>
+    <Target Name="CollectUpgrade:Clean">
+        <MSBuild Projects="CollectUpgrade.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="CollectUpgrade:Make">
+        <MSBuild Projects="CollectUpgrade.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="CollectTests">
+        <MSBuild Projects="CollectTests.dproj"/>
+    </Target>
+    <Target Name="CollectTests:Clean">
+        <MSBuild Projects="CollectTests.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="CollectTests:Make">
+        <MSBuild Projects="CollectTests.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="Collect;CollectServer;CollectSearchSets;CollectScheduler;CollectSchedulerParams;CollectUpgrade;CollectTests"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="Collect:Clean;CollectServer:Clean;CollectSearchSets:Clean;CollectScheduler:Clean;CollectSchedulerParams:Clean;CollectUpgrade:Clean;CollectTests:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="Collect:Make;CollectServer:Make;CollectSearchSets:Make;CollectScheduler:Make;CollectSchedulerParams:Make;CollectUpgrade:Make;CollectTests:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>

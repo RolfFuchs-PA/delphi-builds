@@ -14,11 +14,19 @@
 
 .PARAMETER NIGHTLY_BUILD
     Set to TRUE for nightly/unattended builds.
+
+.PARAMETER AutoConfirm
+    Use default dialog choices for unattended builds.
+
+.PARAMETER VersionChoice
+    Optional unattended version selection index for "Set version for this build".
 #>
 [CmdletBinding()]
 param(
     [string]$INI_SECTION = '',
-    [string]$NIGHTLY_BUILD = 'FALSE'
+    [string]$NIGHTLY_BUILD = 'FALSE',
+    [switch]$AutoConfirm,
+    [int]$VersionChoice = -1
 )
 
 Set-StrictMode -Version Latest
@@ -27,12 +35,26 @@ $ErrorActionPreference = 'Stop'
 # BuildStudio built-in: directory containing this script (with trailing backslash)
 $ABSOPENEDPROJECTDIR = $PSScriptRoot + [IO.Path]::DirectorySeparatorChar
 
+$moduleRoot = Join-Path $PSScriptRoot 'Modules'
+foreach ($moduleName in @(
+    'PAConfig',
+    'PAVersion',
+    'PAFiles',
+    'PADelphiBuild',
+    'PAVault',
+    'PASigning',
+    'PAInstallers',
+    'PATests'
+)) {
+    Import-Module (Join-Path $moduleRoot "$moduleName.psm1") -Force -DisableNameChecking
+}
+
 #======================================================================
 # CONSTANTS
 #======================================================================
 $script:BUILD_LOCATION_PREFIX = 'C:\Builds\Under Development'
-$script:PA_UNIT_FILE_NAME = '\\%VAULT_SERVER_ADDRESS%\forqa\PA Unit Testing\latest-do-not-delete\PAUnitCMD.exe'
 $script:VAULT_SERVER_ADDRESS = 'sdg1.pa.com.au'
+$script:PA_UNIT_FILE_NAME = "\\$script:VAULT_SERVER_ADDRESS\forqa\PA Unit Testing\latest-do-not-delete\PAUnitCMD.exe"
 $script:COMPILER_XE2_DB_EXPRESS_PATH = '-u"C:\\Compilers\\Delphi XE2\\3rd Party\\dbExpress\\v 7.1\\Lib"'
 $script:COMPILER_XE2_DEV_EXPRESS_PATH = '-u"C:\\Compilers\\Delphi XE2\\3rd Party\\Developer Express\\v 20.1.5\\Lib"'
 $script:COMPILER_XE2_JEDI_CODE_PATH = '-u"C:\\Compilers\\Delphi XE2\\3rd Party\\JEDI Code Library\\v 2.3\\win32"'
@@ -93,6 +115,8 @@ $V_RELEASE = ''
 $V_BUILD = ''
 $BUILD_VERSION = ''  # Generated during building - actual build version N.N.N.N
 $RELEASE_VERSION = ''  # Generated during building - \\%VAULT_SERVER_ADDRESS%\Groups\SDG\forqa\<project>\RELEASE_VERSION
+$CLIENT_EXE_VERSION = ''
+$VER_NUM = ''
 $BUILD_INI = ''  # Used to store some information about build
 $LAST_BUILD_DATE_TIME = ''  # Date and time of the last successful build
 $LAST_BUILD_VERSION = ''  # Full path of the final destination of the last successful build
@@ -125,119 +149,69 @@ function Write-Log {
     }
 }
 
-function Get-IniValue {
-    param([string]$Path, [string]$Section, [string]$Key)
-    if (-not (Test-Path $Path)) { return '' }
-    $inSection = $false
-    foreach ($line in [System.IO.File]::ReadLines($Path)) {
-        if ($line -match '^\[(.+)\]$') {
-            $inSection = ($Matches[1] -eq $Section)
-        } elseif ($inSection -and $line -match "^$([regex]::Escape($Key))\s*=\s*(.*)") {
-            $raw = $Matches[1].Trim()
-            # Expand %VAR% references using current script variables
-            $expanded = [regex]::Replace($raw, '%([A-Za-z_][A-Za-z0-9_]*)%', {
-                param($m)
-                $v = Get-Variable -Name $m.Groups[1].Value -ValueOnly -ErrorAction SilentlyContinue
-                if ($null -ne $v) { $v } else { $m.Value }
-            })
-            return $expanded
+function Get-PAApplicationVariableMap {
+    $map = @{}
+    foreach ($name in @(
+        'CURRENT_YEAR',
+        'PROJECT_TITLE',
+        'SOURCE_CONTROL_LABEL',
+        'HELP_FILE_LOCATION',
+        'SOURCE_CONTROL_VERSION',
+        'SOURCE_CONTROL_ROOT_PATH',
+        'SOURCE_CONTROL_PROJECT_PATH',
+        'SOURCE_CONTROL_SOURCE_PATH',
+        'DELPHI_VERSION',
+        'BUILD_PATH',
+        'BUILD_TEMP_PATH',
+        'RELEASE_VERSION',
+        'LAST_BUILD_VERSION'
+    )) {
+        $value = Get-Variable -Name $name -ValueOnly -ErrorAction SilentlyContinue
+        if ($null -ne $value) {
+            $map[$name] = $value
         }
     }
-    return ''
+    return $map
+}
+
+function Get-IniValue {
+    param([string]$Path, [string]$Section, [string]$Key)
+    return Get-PAIniValue -Path $Path -Section $Section -Key $Key -Variables (Get-PAApplicationVariableMap)
 }
 
 function Set-IniValue {
     param([string]$Path, [string]$Section, [string]$Key, [string]$Value)
-    if (-not (Test-Path $Path)) {
-        Set-Content -Path $Path -Value "[$Section]`r`n$Key=$Value"
-        return
-    }
-    $lines = [System.IO.File]::ReadAllLines($Path)
-    $result = [System.Collections.Generic.List[string]]::new($lines.Length + 2)
-    $inSection = $false
-    $keyFound = $false
-    foreach ($line in $lines) {
-        if ($line -match '^\[(.+)\]$') {
-            if ($inSection -and -not $keyFound) {
-                $result.Add("$Key=$Value")
-                $keyFound = $true
-            }
-            $inSection = ($Matches[1] -eq $Section)
-        } elseif ($inSection -and $line -match "^$([regex]::Escape($Key))\s*=") {
-            $result.Add("$Key=$Value")
-            $keyFound = $true
-            continue
-        }
-        $result.Add($line)
-    }
-    if (-not $keyFound) {
-        if (-not $inSection) { $result.Add("[$Section]") }
-        $result.Add("$Key=$Value")
-    }
-    [System.IO.File]::WriteAllLines($Path, $result)
+    Set-PAIniValue -Path $Path -Section $Section -Key $Key -Value $Value
 }
 
 function Get-IniSectionKeys {
     param([string]$Path, [string]$Section)
-    $keys = [System.Collections.Generic.List[string]]::new()
-    if (-not (Test-Path $Path)) { return $keys }
-    $inSection = $false
-    foreach ($line in [System.IO.File]::ReadLines($Path)) {
-        if ($line -match '^\[(.+)\]$') {
-            $inSection = ($Matches[1] -eq $Section)
-        } elseif ($inSection -and $line -match '^(.+?)\s*=') {
-            $keys.Add($Matches[1])
-        }
-    }
-    return $keys
+    return Get-PAIniSectionKeys -Path $Path -Section $Section
 }
 
 function Get-IniSectionValues {
     param([string]$Path, [string]$Section)
-    $values = [System.Collections.Generic.List[string]]::new()
-    if (-not (Test-Path $Path)) { return $values }
-    $inSection = $false
-    foreach ($line in [System.IO.File]::ReadLines($Path)) {
-        if ($line -match '^\[(.+)\]$') {
-            $inSection = ($Matches[1] -eq $Section)
-        } elseif ($inSection -and $line -match '^.+?\s*=\s*(.*)') {
-            $values.Add($Matches[1].Trim())
-        }
-    }
-    return $values
+    return Get-PAIniSectionValues -Path $Path -Section $Section -Variables (Get-PAApplicationVariableMap)
 }
 
 function Find-InFile {
-    param([string]$Path, [string]$Find)
-    if (-not (Test-Path $Path)) { return '' }
-    $content = Get-Content -Path $Path -Raw
-    if ($content -match [regex]::Escape($Find)) { return $Find }
-    return ''
+    param([string]$Path, [string]$Find, [switch]$UseRegex)
+    return Find-PAInFile -Path $Path -Find $Find -UseRegex:$UseRegex
 }
 
 function Replace-InFile {
-    param([string]$Path, [string]$Find, [string]$Replace)
-    if (-not (Test-Path $Path)) { return }
-    $content = Get-Content -Path $Path -Raw
-    $content = $content.Replace($Find, $Replace)
-    Set-Content -Path $Path -Value $content -NoNewline
+    param([string]$Path, [string]$Find, [string]$Replace, [switch]$UseRegex)
+    [void](Replace-PAInFile -Path $Path -Find $Find -Replace $Replace -UseRegex:$UseRegex)
 }
 
 function Get-SubstringBetween {
     param([string]$Input, [string]$Start, [string]$End)
-    $startIdx = $Input.IndexOf($Start)
-    if ($startIdx -lt 0) { return '' }
-    $startIdx += $Start.Length
-    $endIdx = $Input.IndexOf($End, $startIdx)
-    if ($endIdx -lt 0) { return $Input.Substring($startIdx) }
-    return $Input.Substring($startIdx, $endIdx - $startIdx)
+    return Get-PASubstringBetween -Input $Input -Start $Start -End $End
 }
 
 function Get-SubstringAfter {
     param([string]$Input, [string]$Start)
-    $idx = $Input.IndexOf($Start)
-    if ($idx -lt 0) { return '' }
-    return $Input.Substring($idx + $Start.Length)
+    return Get-PASubstringAfter -Input $Input -Start $Start
 }
 
 function Remove-ItemSafe {
@@ -311,17 +285,26 @@ function Invoke-Program {
 
 function Compare-Versions {
     param([string]$Version1, [string]$Version2)
-    # Returns: 1 if Version1 > Version2, -1 if Version1 < Version2, 0 if equal
-    $v1Parts = $Version1 -split '\.' | ForEach-Object { [int]$_ }
-    $v2Parts = $Version2 -split '\.' | ForEach-Object { [int]$_ }
-    
-    for ($i = 0; $i -lt 4; $i++) {
-        $v1 = $v1Parts[$i] ?? 0
-        $v2 = $v2Parts[$i] ?? 0
-        if ($v1 -lt $v2) { return -1 }
-        if ($v1 -gt $v2) { return 1 }
+    return Compare-PAVersion -Version1 $Version1 -Version2 $Version2
+}
+
+function Get-ProjectVersion {
+    param([string]$ProjectPath)
+
+    try {
+        $versions = Get-PAProjectVersion -Path $ProjectPath
+        Write-Log "[DEBUG] Extracted version from $(Split-Path $ProjectPath -Leaf): $($versions.Major).$($versions.Minor).$($versions.Release).$($versions.Build)"
+        return $versions
     }
-    return 0
+    catch {
+        Write-Log "[ERROR] Failed to parse project file $ProjectPath : $_"
+        return [pscustomobject]@{
+            Major = 0
+            Minor = 0
+            Release = 0
+            Build = 0
+        }
+    }
 }
 
 #region Vault Source Control Helpers
@@ -352,12 +335,24 @@ function Get-VaultWorkingFolder {
 }
 
 function Invoke-VaultCheckOut {
-    param([string]$Repository, [string]$Path, [string]$Host)
+    param(
+        [string]$Repository,
+        [string]$Path,
+        [Alias('Host')]
+        [string]$HostName
+    )
     Write-Log "Vault CheckOut: $Path"
     $auth = Get-VaultAuthArgs
-    if ($Host) { $auth[1] = $Host }
-    & $script:VaultExe checkout @auth -repository $Repository `"$Path`"
-    if ($LASTEXITCODE -ne 0) { throw "Vault checkout failed: $Path" }
+    if ($HostName) { $auth[1] = $HostName }
+    $output = (& $script:VaultExe checkout @auth -repository $Repository $Path 2>&1) -join "`r`n"
+    if ($output) { Write-Host $output }
+    if ($LASTEXITCODE -ne 0) {
+        if ($output -like '*already have the file checked out*') {
+            Write-Log "Vault CheckOut already held locally: $Path"
+        } else {
+            throw "Vault checkout failed: $Path"
+        }
+    }
     $script:VaultCheckedOut = $true
 }
 
@@ -365,6 +360,11 @@ function Invoke-VaultGetLatest {
     param([string]$Repository, [string]$Path, [string]$LocalFolder)
     Write-Log "Vault GetLatest: $Path"
     $auth = Get-VaultAuthArgs
+    if (-not [string]::IsNullOrWhiteSpace($LocalFolder)) {
+        New-Item -ItemType Directory -Path $LocalFolder -Force | Out-Null
+        & $script:VaultExe SETWORKINGFOLDER @auth -repository $Repository -forcesubfolderstoinherit "$Path" "$LocalFolder"
+        if ($LASTEXITCODE -ne 0) { throw "Vault set working folder failed: $Path -> $LocalFolder" }
+    }
     & $script:VaultExe get @auth -repository $Repository "$Path"
     if ($LASTEXITCODE -ne 0) { throw "Vault get latest failed: $Path" }
 }
@@ -373,22 +373,36 @@ function Invoke-VaultCheckIn {
     param([string]$Repository, [string]$Path, [string]$Comment)
     Write-Log "Vault CheckIn: $Path"
     $auth = Get-VaultAuthArgs
-    & $script:VaultExe checkin @auth -repository $Repository -comment `"$Comment`" `"$Path`"
-    if ($LASTEXITCODE -ne 0) { throw "Vault checkin failed: $Path" }
+    $output = (& $script:VaultExe checkin @auth -repository $Repository -comment $Comment $Path 2>&1) -join "`r`n"
+    if ($output) { Write-Host $output }
+    if ($LASTEXITCODE -ne 0) {
+        if ($output -like '*current change set does not have any items*' -or $output -like '*No items to commit*') {
+            Write-Log "Vault CheckIn skipped; no pending changes for $Path"
+        } else {
+            throw "Vault checkin failed: $Path"
+        }
+    }
 }
 
 function Invoke-VaultLabel {
     param([string]$Repository, [string]$Path, [string]$Label)
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        Write-Log "Vault Label skipped because path is empty for label $Label"
+        return
+    }
     Write-Log "Vault Label: $Path -> $Label"
     $auth = Get-VaultAuthArgs
-    & $script:VaultExe label @auth -repository $Repository `"$Path`" `"$Label`"
+    & $script:VaultExe label @auth -repository $Repository $Path $Label
+    if ($LASTEXITCODE -ne 0) {
+        throw "Vault label failed: $Path -> $Label"
+    }
 }
 
 function Invoke-VaultUndoCheckOut {
     param([string]$Repository, [string]$Path)
     Write-Log "Vault UndoCheckOut: $Path"
     $auth = Get-VaultAuthArgs
-    & $script:VaultExe undocheckout @auth -repository $Repository `"$Path`" 2>$null
+    & $script:VaultExe undocheckout @auth -repository $Repository $Path 2>$null
 }
 
 function Invoke-VaultCommand {
@@ -431,26 +445,20 @@ function Get-VaultFiles {
 
 function Get-XmlValue {
     param([string]$Path, [string]$XPath)
-    if (-not (Test-Path $Path)) { return '' }
-    [xml]$xml = Get-Content -Path $Path -Raw
-    $node = $xml.SelectSingleNode($XPath)
-    if ($node) { return $node.InnerText }
-    return ''
+    return Get-PAXmlValue -Path $Path -XPath $XPath
 }
 
 function Set-XmlValue {
     param([string]$Path, [string]$XPath, [string]$Value)
-    if (-not (Test-Path $Path)) { return }
-    [xml]$xml = Get-Content -Path $Path -Raw
-    $node = $xml.SelectSingleNode($XPath)
-    if ($node) {
-        $node.InnerText = $Value
-        $xml.Save($Path)
-    }
+    [void](Set-PAXmlValue -Path $Path -XPath $XPath -Value $Value)
 }
 
 function Confirm-Action {
     param([string]$Message, [string]$Default = 'Yes')
+    if ($AutoConfirm) {
+        Write-Log "Auto-confirming prompt with default '$Default': $Message"
+        return ($Default -in @('False', 'No')) ? 'No' : 'Yes'
+    }
     Add-Type -AssemblyName System.Windows.Forms
     $result = [System.Windows.Forms.MessageBox]::Show($Message, 'Build Confirmation', 'YesNo', 'Question')
     return ($result -eq 'Yes') ? 'Yes' : 'No'
@@ -458,6 +466,10 @@ function Confirm-Action {
 
 function Show-RadioMenu {
     param([string]$Title, [string[]]$Options, [int]$DefaultIndex = 0)
+    if ($AutoConfirm) {
+        Write-Log "Auto-selecting option $DefaultIndex for '$Title': $($Options[$DefaultIndex])"
+        return $DefaultIndex
+    }
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
@@ -534,21 +546,84 @@ function Show-RadioMenu {
     return 0  # default / cancel
 }
 
-function Invoke-MSBuild {
-    param([string]$SolutionFile, [string]$Configuration = 'Release')
-    Write-Log "Building: $SolutionFile ($Configuration)"
-    $msbuild = 'C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\MSBuild\Current\Bin\MSBuild.exe'
-    if (-not (Test-Path $msbuild)) {
-        $msbuild = (Get-Command msbuild -ErrorAction SilentlyContinue).Source
+function Resolve-MSBuildPath {
+    $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path $vswhere) {
+        $path = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' |
+            Where-Object { $_ -notlike '*\amd64\*' } |
+            Select-Object -First 1
+        if ($path -and (Test-Path $path)) {
+            return $path
+        }
     }
-    & $msbuild $SolutionFile /p:Configuration=$Configuration /verbosity:minimal
+
+    $candidates = @(
+        'C:\Program Files\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\Bin\MSBuild.exe',
+        'C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\MSBuild\Current\Bin\MSBuild.exe',
+        'C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe',
+        'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe',
+        'C:\Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe',
+        'C:\Windows\Microsoft.NET\Framework\v4.0.30319\MSBuild.exe'
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    $command = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+
+    throw "MSBuild.exe was not found. Install Visual Studio Build Tools or add MSBuild.exe to PATH."
+}
+
+function Invoke-MSBuild {
+    param([string]$SolutionFile, [string]$Configuration = 'Release', [string]$CompilerVersion)
+    Write-Log "Building: $SolutionFile ($Configuration)"
+    $msbuild = Resolve-MSBuildPath
+    $properties = @("/p:Configuration=$Configuration")
+    if ($Configuration -like '*|*') {
+        $parts = $Configuration -split '\|', 2
+        $properties = @("/p:Configuration=$($parts[0])", "/p:Platform=$($parts[1])")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($CompilerVersion)) {
+        $properties += "/p:VisualStudioVersion=$CompilerVersion"
+    }
+    & $msbuild $SolutionFile @properties /verbosity:minimal
     if ($LASTEXITCODE -ne 0) { throw "MSBuild failed for $SolutionFile" }
 }
 
 function Invoke-InstallAware {
-    param([string]$ProjectFile)
+    param([string]$ProjectFile, [string]$BuildType)
     Write-Log "Building InstallAware: $ProjectFile"
-    & miacmd.exe $ProjectFile
+    $installAwareExe = Get-Command miabuild.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1
+    if (-not $installAwareExe) {
+        foreach ($candidate in @(
+            'C:\Program Files (x86)\InstallAware\InstallAware 15\miabuild.exe',
+            'C:\Program Files\InstallAware\InstallAware 15\miabuild.exe',
+            'C:\Program Files (x86)\InstallAware\InstallAware 11\miabuild.exe'
+        )) {
+            if (Test-Path $candidate) {
+                $installAwareExe = $candidate
+                break
+            }
+        }
+    }
+    if (-not $installAwareExe) {
+        throw "InstallAware command-line builder miabuild.exe was not found."
+    }
+
+    $arguments = @($ProjectFile)
+    if ($BuildType -eq 'Compressed Single Self Installing EXE') {
+        $arguments += '/b=1'
+    } elseif (-not [string]::IsNullOrWhiteSpace($BuildType)) {
+        $arguments += "/b=$BuildType"
+    }
+
+    & $installAwareExe @arguments
     if ($LASTEXITCODE -ne 0) { throw "InstallAware build failed for $ProjectFile" }
 }
 
@@ -578,6 +653,10 @@ function Export-BuildLog {
     return ($script:BuildLog -join "`r`n")
 }
 
+function Get-BuildLog {
+    return (Export-BuildLog)
+}
+
 #======================================================================
 # MAIN SCRIPT
 #======================================================================
@@ -593,18 +672,43 @@ function Invoke-Get-files-from-DevOps {
         $ProjectRoot
     )
 
+    if ([string]::IsNullOrWhiteSpace($Repository)) { $Repository = 'https://github.com/Professional-Advantage-SDG/PasqlScripts.git' }
+    if ([string]::IsNullOrWhiteSpace($Output)) { $Output = "C:\Temp\$PROJECT_TITLE" }
+    if ([string]::IsNullOrWhiteSpace($PASQLFolder)) { $PASQLFolder = "$BUILD_TEMP_PATH\scripts" }
+    if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { $ProjectRoot = "$BUILD_TEMP_PATH" }
+
+    if ([string]::IsNullOrWhiteSpace($Output) -or [string]::IsNullOrWhiteSpace($PASQLFolder) -or [string]::IsNullOrWhiteSpace($ProjectRoot)) {
+        throw "Get files from DevOps requires Output, PASQLFolder, and ProjectRoot."
+    }
+
     if (Test-Path "$Output") {  # Output
         Remove-ItemSafe -Path "$Output" -Recurse  # Remove Output
     }
     New-Item -ItemType Directory -Path "$Output" -Force | Out-Null  # Create Output
-    $PowershellParams = "-OutputFolder '$Output' -Repository '$Repository'"  # PowershellParams
-    $CopyScript = "$ProjectRoot\copy_pasql.ps1"  # CopyScript
-    # [DISABLED] Log Message
-    # [DISABLED] Execute DOS Command (Get DevOps Files) - Get DevOps Files
-    Invoke-DosCommand -Command "powershell.exe -Command `"& 'C:\work\BuildStudio\getgithubfiles.ps1' $PowershellParams`""  # Get GitHub Files
-    Set-Content -Path "$CopyScript" -Value "$sourceFolder = `"$Output`" $destinationFolder = `"$PASQLFolder`"  Write-Host `"Copying scripts from '$sourceFolder' into '$destinationFolder'`"  # Get the list of files in Folder $destinationFolder $destinationFiles = Get-ChildItem -Path $destinationFolder | ForEach-Object { $_.Name }  # Iterate through each file in Folder $sourceFolder foreach ($file in Get-ChildItem -Path $sourceFolder) {     # Check if the file exists in Folder $destinationFolder     if ($destinationFiles -contains $file.Name) {         # If it exists, copy the file from Folder$sourceFolder to Folder $destinationFolder         Copy-Item -Path $file.FullName -Destination $destinationFolder -Force         Write-Host `"Copied: $($file.Name)`"     } else {         Write-Host `"Skipped: $($file.Name) (Not found in Folder $destinationFolder)`"     } }"  # Generate copy script
-    Invoke-DosCommand -Command "powershell.exe -Command `"& '$CopyScript'`""  # Copy files
+    $getGitHubFiles = Join-Path $PSScriptRoot 'getgithubfiles.ps1'
+    if (-not (Test-Path $getGitHubFiles)) {
+        throw "Unable to locate getgithubfiles.ps1 at $getGitHubFiles"
+    }
+
+    $VAR_RESULT_TEXT = Invoke-DosCommand -Command "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$getGitHubFiles`" -OutputFolder `"$Output`" -Repository `"$Repository`""  # Get GitHub Files
+    if ($script:LastExitCode -ne 0) {
+        throw "Failed to get shared PASQL scripts from GitHub: $VAR_RESULT_TEXT"
+    }
+
+    if (-not (Test-Path "$PASQLFolder")) {
+        throw "PASQL folder does not exist: $PASQLFolder"
+    }
+
+    $destinationFiles = @(Get-ChildItem -Path "$PASQLFolder" -File | Select-Object -ExpandProperty Name)
+    foreach ($file in Get-ChildItem -Path "$Output" -File -Recurse) {
+        if ($destinationFiles -contains $file.Name) {
+            Copy-Item -Path $file.FullName -Destination "$PASQLFolder" -Force
+            Write-Log "Copied shared PASQL script: $($file.Name)"
+        }
+    }
 }
+
+Set-Alias -Name Invoke-get_files_from_devops -Value Invoke-Get-files-from-DevOps
 
 
 # === Submacro: Update dcc config file ===
@@ -684,6 +788,426 @@ function Invoke-Update-dcc-config-file {
     }
 }
 
+Set-Alias -Name Invoke-UpdateDccConfigFile -Value Invoke-Update-dcc-config-file
+
+function Repair-PARsVarsFile {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        throw "rsvars.bat was not generated: $Path"
+    }
+
+    $content = Get-Content -Path $Path -Raw
+    $normalized = [regex]::Replace($content, '\s+@SET\s+', "`r`n@SET ")
+    if ($normalized -ne $content) {
+        $item = Get-Item -Path $Path
+        if ($item.IsReadOnly) {
+            $item.IsReadOnly = $false
+        }
+        Set-Content -Path $Path -Value $normalized -NoNewline
+    }
+}
+
+function Ensure-PADelphiTargetsImport {
+    param(
+        [Parameter(Mandatory)][string]$ProjectPath,
+        [Parameter(Mandatory)][string]$Compiler
+    )
+
+    if ($Compiler -notin @('XE2', 'XE6', '10.4')) {
+        return
+    }
+    if (-not (Test-Path $ProjectPath)) {
+        throw "Delphi project file not found: $ProjectPath"
+    }
+
+    $content = Get-Content -Path $ProjectPath -Raw
+    if ($content -match '(?i)CodeGear\.Delphi\.Targets') {
+        return
+    }
+
+    $import = '  <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets"/>'
+    if ($content -notmatch '(?is)</Project>\s*$') {
+        throw "Unable to add Delphi targets import; project file has no closing Project element: $ProjectPath"
+    }
+
+    $updated = [regex]::Replace($content, '(?is)\s*</Project>\s*$', "`r`n$import`r`n</Project>`r`n", 1)
+    $item = Get-Item -Path $ProjectPath
+    if ($item.IsReadOnly) {
+        $item.IsReadOnly = $false
+    }
+    Set-Content -Path $ProjectPath -Value $updated -NoNewline
+    Write-Log "Added missing Delphi MSBuild targets import to $ProjectPath"
+}
+
+function Clear-PADelphiBuildOutputs {
+    param(
+        [Parameter(Mandatory)][string]$ProjectPath,
+        [Parameter(Mandatory)][string]$OutputDirectory
+    )
+
+    $projectName = [System.IO.Path]::GetFileNameWithoutExtension($ProjectPath)
+    $extensions = @('.exe', '.dll', '.ocx', '.drc', '.map', '.rsm', '.tds', '.tlb', '.ridl', '.res')
+    $suffixes = @('_TLB.pas')
+
+    foreach ($extension in $extensions) {
+        $outputPath = Join-Path -Path $OutputDirectory -ChildPath "$projectName$extension"
+        if (Test-Path $outputPath) {
+            $item = Get-Item -Path $outputPath
+            if ($item.IsReadOnly) {
+                $item.IsReadOnly = $false
+                Write-Log "Cleared read-only attribute on Delphi build output $outputPath"
+            }
+        }
+    }
+
+    foreach ($suffix in $suffixes) {
+        $outputPath = Join-Path -Path $OutputDirectory -ChildPath "$projectName$suffix"
+        if (Test-Path $outputPath) {
+            $item = Get-Item -Path $outputPath
+            if ($item.IsReadOnly) {
+                $item.IsReadOnly = $false
+                Write-Log "Cleared read-only attribute on Delphi build output $outputPath"
+            }
+        }
+    }
+}
+
+function Clear-PADelphiIntermediateOutputs {
+    param([Parameter(Mandatory)][string]$Directory)
+
+    if (-not (Test-Path $Directory)) {
+        return
+    }
+
+    foreach ($file in Get-ChildItem -Path $Directory -Include '*.dcu', '*.o', '*.rsm', '*.tds', '*.res' -Recurse -File -ErrorAction SilentlyContinue) {
+        if ($file.IsReadOnly) {
+            $file.IsReadOnly = $false
+            Write-Log "Cleared read-only attribute on Delphi intermediate output $($file.FullName)"
+        }
+    }
+}
+
+function Clear-PAReadOnlyFile {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        return
+    }
+
+    $item = Get-Item -Path $Path
+    if ($item.IsReadOnly) {
+        $item.IsReadOnly = $false
+        Write-Log "Cleared read-only attribute on $Path"
+    }
+}
+
+function Set-PARegexReplacement {
+    param(
+        [Parameter(Mandatory)][string]$Text,
+        [Parameter(Mandatory)][string]$Pattern,
+        [Parameter(Mandatory)][scriptblock]$Replacement,
+        [Parameter(Mandatory)][ref]$Changed
+    )
+
+    $updated = [regex]::Replace($Text, $Pattern, { param($match) & $Replacement $match })
+    if ($updated -ne $Text) {
+        $Changed.Value = $true
+    }
+    return $updated
+}
+
+function Set-PADelphiProjectVersion {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Version
+    )
+
+    if (-not (Test-Path $Path)) {
+        throw "Delphi project file not found: $Path"
+    }
+
+    $parts = Split-PAVersion -Version $Version
+    $versionValues = @{
+        MajorVer = $parts.Major
+        MinorVer = $parts.Minor
+        Release  = $parts.Release
+        Build    = $parts.Build
+    }
+
+    $content = Get-Content -Path $Path -Raw
+    $changed = $false
+    $extension = [System.IO.Path]::GetExtension($Path).ToLowerInvariant()
+    $currentYearForCopyright = if ($CURRENT_YEAR) { $CURRENT_YEAR } else { (Get-Date).Year }
+
+    if ($extension -eq '.dproj') {
+        foreach ($key in $versionValues.Keys) {
+            $value = [string]$versionValues[$key]
+            $elementName = switch ($key) {
+                'MajorVer' { 'VerInfo_MajorVer' }
+                'MinorVer' { 'VerInfo_MinorVer' }
+                'Release'  { 'VerInfo_Release' }
+                'Build'    { 'VerInfo_Build' }
+            }
+            $content = Set-PARegexReplacement -Text $content -Pattern "(?s)(<$elementName>)(.*?)(</$elementName>)" -Changed ([ref]$changed) -Replacement {
+                param($match)
+                return "$($match.Groups[1].Value)$value$($match.Groups[3].Value)"
+            }
+            $content = Set-PARegexReplacement -Text $content -Pattern "(?s)(<VersionInfo\s+Name=['""]$key['""][^>]*>)(.*?)(</VersionInfo>)" -Changed ([ref]$changed) -Replacement {
+                param($match)
+                return "$($match.Groups[1].Value)$value$($match.Groups[3].Value)"
+            }
+        }
+
+        foreach ($key in @('FileVersion', 'ProductVersion')) {
+            $content = Set-PARegexReplacement -Text $content -Pattern "(?im)(\b$key=)(\d+(?:\.\d+){1,3})" -Changed ([ref]$changed) -Replacement {
+                param($match)
+                return "$($match.Groups[1].Value)$Version"
+            }
+        }
+
+        $content = Set-PARegexReplacement -Text $content -Pattern "(?im)(\bLegalCopyright=)([^;<>]*)" -Changed ([ref]$changed) -Replacement {
+            param($match)
+            return "$($match.Groups[1].Value)©1991 - $currentYearForCopyright"
+        }
+        $content = Set-PARegexReplacement -Text $content -Pattern "(?s)(<VersionInfo\s+Name=['""]LegalCopyright['""][^>]*>)(.*?)(</VersionInfo>)" -Changed ([ref]$changed) -Replacement {
+            param($match)
+            return "$($match.Groups[1].Value)©1991 - $currentYearForCopyright$($match.Groups[3].Value)"
+        }
+        $content = Set-PARegexReplacement -Text $content -Pattern "(?s)(<VerInfo_LegalCopyright>)(.*?)(</VerInfo_LegalCopyright>)" -Changed ([ref]$changed) -Replacement {
+            param($match)
+            return "$($match.Groups[1].Value)©1991 - $currentYearForCopyright$($match.Groups[3].Value)"
+        }
+    } elseif ($extension -eq '.dof') {
+        foreach ($key in $versionValues.Keys) {
+            $value = [string]$versionValues[$key]
+            $content = Set-PARegexReplacement -Text $content -Pattern "(?im)^($key\s*=\s*)\d+" -Changed ([ref]$changed) -Replacement {
+                param($match)
+                return "$($match.Groups[1].Value)$value"
+            }
+        }
+    }
+
+    if ($changed) {
+        Clear-PAReadOnlyFile -Path $Path
+        Set-Content -Path $Path -Value $content -NoNewline
+        Write-Log "Updated Delphi project version to $Version in $Path"
+    } else {
+        Write-Log "No Delphi project version entries found to update in $Path"
+    }
+}
+
+function Set-PAVersionSourceFileVersion {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Version
+    )
+
+    if (-not (Test-Path $Path)) {
+        throw "Version source file not found: $Path"
+    }
+
+    $parts = Split-PAVersion -Version $Version
+    $content = Get-Content -Path $Path -Raw
+    $changed = $false
+
+    foreach ($name in @('VERSION', 'cVersion', 'cAppVersion', 'APP_VERSION', 'APPLICATION_VERSION')) {
+        $content = Set-PARegexReplacement -Text $content -Pattern "(?im)(\b$name\s*=\s*['""])\d+\.\d+\.\d+\.\d+(['""])" -Changed ([ref]$changed) -Replacement {
+            param($match)
+            return "$($match.Groups[1].Value)$Version$($match.Groups[2].Value)"
+        }
+    }
+
+    $versionConstants = @(
+        @{ Pattern = '(?:MAJOR_VERSION|cMajor(?:Version)?)'; Value = $parts.Major },
+        @{ Pattern = '(?:MINOR_VERSION|cMinor(?:Version)?)'; Value = $parts.Minor },
+        @{ Pattern = '(?:RELEASE_VERSION|cRelease(?:Version)?)'; Value = $parts.Release },
+        @{ Pattern = '(?:BUILD_VERSION|cBuild(?:Version)?)'; Value = $parts.Build }
+    )
+
+    foreach ($constant in $versionConstants) {
+        $value = [string]$constant.Value
+        $pattern = "(?im)(\b$($constant.Pattern)\s*=\s*)(['""]?)\d+(['""]?)"
+        $content = Set-PARegexReplacement -Text $content -Pattern $pattern -Changed ([ref]$changed) -Replacement {
+            param($match)
+            return "$($match.Groups[1].Value)$($match.Groups[2].Value)$value$($match.Groups[3].Value)"
+        }
+    }
+
+    if ($changed) {
+        Clear-PAReadOnlyFile -Path $Path
+        Set-Content -Path $Path -Value $content -NoNewline
+        Write-Log "Updated source version constants to $Version in $Path"
+    } else {
+        Write-Log "No source version constants found to update in $Path"
+    }
+}
+
+function Set-PASetupPasqlVersion {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Version
+    )
+
+    if (-not (Test-Path $Path)) {
+        throw "Setup PASQL file not found: $Path"
+    }
+
+    $content = Get-Content -Path $Path -Raw -ErrorAction Stop
+    $changed = $false
+
+    foreach ($name in @('AppDBVersion', 'AppMinClientVersion', 'AppMinServerVersion')) {
+        $content = Set-PARegexReplacement -Text $content -Pattern "(?im)^(\s*$name\s*=\s*['""])\d+\.\d+\.\d+\.\d+(['""])" -Changed ([ref]$changed) -Replacement {
+            param($match)
+            return "$($match.Groups[1].Value)$Version$($match.Groups[2].Value)"
+        }
+    }
+
+    foreach ($name in @('VERSION', 'version_str')) {
+        $content = Set-PARegexReplacement -Text $content -Pattern "(?im)^(\s*$name\s*=\s*)['""]?\d+\.\d+\.\d+\.\d+['""]?" -Changed ([ref]$changed) -Replacement {
+            param($match)
+            return "$($match.Groups[1].Value)'$Version'"
+        }
+    }
+
+    if ($changed) {
+        Clear-PAReadOnlyFile -Path $Path
+        Set-Content -Path $Path -Value $content -NoNewline -ErrorAction Stop
+        Write-Log "Updated setup PASQL version variables to $Version in $Path"
+    } else {
+        Write-Log "No setup PASQL version variables found to update in $Path"
+    }
+
+    $updatedContent = Get-Content -Path $Path -Raw -ErrorAction Stop
+    foreach ($name in @('AppDBVersion', 'AppMinClientVersion', 'AppMinServerVersion')) {
+        if ($updatedContent -notmatch "(?im)^\s*$name\s*=\s*['""]$([regex]::Escape($Version))['""]") {
+            throw "Setup PASQL variable $name was not updated to $Version in $Path"
+        }
+    }
+}
+
+function Assert-PABuiltExecutableVersions {
+    param(
+        [Parameter(Mandatory)][string]$RootPath,
+        [Parameter(Mandatory)][string]$ExpectedVersion,
+        [Parameter(Mandatory)][string]$ExpectedCopyrightYear
+    )
+
+    $exeFiles = @()
+    $exeFiles += Get-ChildItem -Path "$RootPath\*.exe" -File -ErrorAction SilentlyContinue
+    $exeFiles += Get-ChildItem -Path "$RootPath\debug\*.exe" -File -ErrorAction SilentlyContinue
+
+    foreach ($exeFile in $exeFiles) {
+        $fileVersionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exeFile.FullName)
+        $fileVersion = ($fileVersionInfo.FileVersion -replace '[^\d\.].*$', '').Trim()
+        if ([string]::IsNullOrWhiteSpace($fileVersion)) {
+            continue
+        }
+        if ($fileVersion -ne $ExpectedVersion) {
+            throw "Built executable has version $fileVersion instead of $ExpectedVersion`: $($exeFile.FullName)"
+        }
+
+        $productVersion = ($fileVersionInfo.ProductVersion -replace '[^\d\.].*$', '').Trim()
+        if (-not [string]::IsNullOrWhiteSpace($productVersion) -and $productVersion -ne $ExpectedVersion) {
+            throw "Built executable has product version $productVersion instead of $ExpectedVersion`: $($exeFile.FullName)"
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($fileVersionInfo.LegalCopyright) -and $fileVersionInfo.LegalCopyright -notmatch [regex]::Escape($ExpectedCopyrightYear)) {
+            throw "Built executable has copyright '$($fileVersionInfo.LegalCopyright)' instead of year $ExpectedCopyrightYear`: $($exeFile.FullName)"
+        }
+
+        Write-Log "Verified executable file/product version $ExpectedVersion and copyright year $ExpectedCopyrightYear`: $($exeFile.FullName)"
+    }
+}
+
+function Restore-PAGeneratedTypeLibrary {
+    param(
+        [Parameter(Mandatory)][string]$ProjectDirectory,
+        [Parameter(Mandatory)][string]$TypeLibraryName
+    )
+
+    $typeLibraryBaseName = [System.IO.Path]::GetFileNameWithoutExtension($TypeLibraryName)
+    $generatedUnitName = "${typeLibraryBaseName}_TLB.pas"
+    $generatedUnitPath = Join-Path -Path $ProjectDirectory -ChildPath $generatedUnitName
+    if (Test-Path $generatedUnitPath) {
+        return
+    }
+
+    $projectRoot = [System.IO.Path]::GetPathRoot($ProjectDirectory)
+    $searchRoots = @()
+    if ($projectRoot) {
+        $searchRoots += (Join-Path -Path $projectRoot -ChildPath 'Builds\Released')
+    }
+    $searchRoots += 'C:\Builds\Released'
+
+    $candidate = $null
+    foreach ($searchRoot in ($searchRoots | Select-Object -Unique)) {
+        if (-not (Test-Path $searchRoot)) {
+            continue
+        }
+
+        $candidate = Get-ChildItem -Path $searchRoot -Filter $generatedUnitName -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($candidate) {
+            break
+        }
+    }
+
+    if (-not $candidate) {
+        Write-Log "[WARNING] Could not find fallback generated type library unit $generatedUnitName"
+        return
+    }
+
+    Copy-Item -Path $candidate.FullName -Destination $generatedUnitPath -Force
+    (Get-Item -Path $generatedUnitPath).IsReadOnly = $false
+    Write-Log "Restored generated type library unit $generatedUnitPath from $($candidate.FullName)"
+
+    $typeLibraryFile = Join-Path -Path $candidate.DirectoryName -ChildPath ([System.IO.Path]::GetFileName($TypeLibraryName))
+    if (Test-Path $typeLibraryFile) {
+        $destinationTypeLibraryFile = Join-Path -Path $ProjectDirectory -ChildPath ([System.IO.Path]::GetFileName($TypeLibraryName))
+        Copy-Item -Path $typeLibraryFile -Destination $destinationTypeLibraryFile -Force
+        (Get-Item -Path $destinationTypeLibraryFile).IsReadOnly = $false
+        Write-Log "Restored type library $destinationTypeLibraryFile from $typeLibraryFile"
+    }
+}
+
+function Disable-PAMissingRidlPreBuildEvents {
+    param([Parameter(Mandatory)][string]$ProjectPath)
+
+    if (-not (Test-Path $ProjectPath)) {
+        throw "Delphi project file not found: $ProjectPath"
+    }
+
+    $projectDirectory = Split-Path -Path $ProjectPath -Parent
+    $content = Get-Content -Path $ProjectPath -Raw
+    $updated = $content
+    $gentlbPattern = '(?:&quot;|")?\$\(BDS\)\\bin\\gentlb\.exe(?:&quot;|")?\s+-T(?<tlb>\S+)\s+(?<ridl>\S+\.ridl)'
+    $preBuildEventPattern = '<PreBuildEvent(?:\s[^>]*)?>.*?</PreBuildEvent>'
+    $preBuildEvents = [regex]::Matches($content, $preBuildEventPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Singleline)
+
+    foreach ($preBuildEvent in $preBuildEvents) {
+        $matches = [regex]::Matches($preBuildEvent.Value, $gentlbPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        foreach ($match in $matches) {
+            $ridlName = $match.Groups['ridl'].Value.Trim('"')
+            $ridlPath = Join-Path -Path $projectDirectory -ChildPath $ridlName
+            if (Test-Path $ridlPath) {
+                continue
+            }
+
+            $updated = $updated.Replace($preBuildEvent.Value, '<PreBuildEvent/>')
+            Restore-PAGeneratedTypeLibrary -ProjectDirectory $projectDirectory -TypeLibraryName $match.Groups['tlb'].Value.Trim('"')
+            Write-Log "Disabled pre-build gentlb event in $ProjectPath because $ridlPath does not exist"
+            break
+        }
+    }
+
+    if ($updated -ne $content) {
+        $item = Get-Item -Path $ProjectPath
+        if ($item.IsReadOnly) {
+            $item.IsReadOnly = $false
+        }
+        Set-Content -Path $ProjectPath -Value $updated -NoNewline
+    }
+}
 
 # === Submacro: Build project (DPR file) ===
 function Invoke-Build-project-DPR-file {
@@ -693,6 +1217,9 @@ function Invoke-Build-project-DPR-file {
     )
 
     $ProjectLocation = Split-Path -Path "$ProjectFile" -Parent  # Extract ProjectLocation
+    if (-not $ProjectLocation.EndsWith('\')) {
+        $ProjectLocation = "$ProjectLocation\"
+    }
     $ProjectName = Split-Path -Path "$ProjectFile" -Leaf  # Extract ProjectName
     $AddEurekaLog = ""  # Clear AddEurekaLog flag
     if ("$ProjectName" -like "*server*") {  # If project name contains server
@@ -734,26 +1261,24 @@ function Invoke-Build-project-DPR-file {
         
         Invoke-DosCommand -Command "$StandardBuild" -WorkingDirectory "$ProjectLocation"  # Build standard project
         Invoke-DosCommand -Command "$DebugBuild" -WorkingDirectory "$ProjectLocation"  # Build debug project
-        Invoke-CheckBuildLogFile   # Check standard build result
-        Invoke-CheckBuildLogFile   # Check debug build result
+        Invoke-Check-build-log-file -LogFile $StandardBuildLog -Compiler $Compiler  # Check standard build result
+        Invoke-Check-build-log-file -LogFile $DebugBuildLog -Compiler $Compiler  # Check debug build result
     } else {  # If building XE2 or more recent projects
-        $ProjectName = $ProjectName.Replace('.dpr', '.dproj')  # Rename dpr to dproj
+        if ($ProjectName.EndsWith('.dpr', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $ProjectName = [System.IO.Path]::ChangeExtension($ProjectName, '.dproj')  # Rename dpr to dproj
+        }
         $StandardBuildLog = "${ProjectLocation}Build$ProjectName.log"  # Set StandardBuildLog
         $DebugBuildLog = "${ProjectLocation}Debug-Build$ProjectName.log"  # Set DebugBuildLog
         $Platform = ""  # Set Platform
         if ("$ProjectName" -notlike "*X.dproj") {  # If not building activeX
-            # If XML Node/Attribute Exists: //PropertyGroup[1]/Platform[1]/text()[1]
-            $PlatformFound = 'False'
+            $Platform = "Win32"
             try {
                 [xml]$_xml = Get-Content -Path "$ProjectLocation$ProjectName" -Raw
-                $_nsMgr = [System.Xml.XmlNamespaceManager]::new($_xml.NameTable)
-                $_node = $_xml.SelectSingleNode("//*[local-name()='Platform'][@*[local-name()='Condition']] ", $_nsMgr)
-                if ($_node) { $PlatformFound = 'True' }
+                $_node = $_xml.SelectSingleNode("//*[local-name()='Platform'][@*[local-name()='Condition']]")
+                if ($_node -and -not [string]::IsNullOrWhiteSpace($_node.InnerText)) {
+                    $Platform = $_node.InnerText.Trim()
+                }
             } catch { Write-Log "XML query failed: $_" }
-            if ($PlatformFound -ceq 'True') {
-                $None = Get-XmlValue -Path "" -XPath "//*[local-name()='Platform'][@*[local-name()='Condition']] "  # Platform
-            } else {
-            }
         } else {
             $Platform = "Win32"  # Platform = Win32
         }
@@ -827,48 +1352,68 @@ function Invoke-Build-project-DPR-file {
         if ("$DCCUnitSearch" -ne "") {  # If DCCUnitSearch not blank
             $DCCUnitSearch = "@SET DCC_UnitSearchPath=$DCCUnitSearch"  # Prepend DCCUnitSearch
         }
+        # Preserve batch variable references while PowerShell interpolates build-specific values.
+        $FrameworkDir = '$FrameworkDir'
+        $FrameworkSDKDir = '$FrameworkSDKDir'
+        $PATH = '$PATH'
+        $BDS = '$BDS'
+        $MSBuildPath = Resolve-MSBuildPath
+        foreach ($buildScriptPath in @("${ProjectLocation}rsvars.bat", "${ProjectLocation}build.bat", "${ProjectLocation}debug-build.bat")) {
+            Clear-PAReadOnlyFile -Path $buildScriptPath
+        }
         if ("$Compiler" -like "*10.4*") {  # if 10.4
             if ("$Platform" -eq "Win64") {  # if Platform == win64
                 if (Test-Path "$ProjectLocation\dcc64.cfg") {  # If dcc64.cfg file exists
                     Set-Content -Path "${ProjectLocation}rsvars.bat" -Value "@SET BDS=C:\Compilers\Delphi 10.4\Embarcadero @SET BDSINCLUDE=C:\Compilers\Delphi 10.4\Embarcadero\include @SET BDSCOMMONDIR=C:\Users\Public\Documents\Embarcadero @SET FrameworkDir=C:\Windows\Microsoft.NET\Framework\v4.0.30319 @SET FrameworkVersion=v4.0 @SET FrameworkSDKDir= @SET PATH=$FrameworkDir;$FrameworkSDKDir;C:\Compilers\Delphi 10.4\Embarcadero\bin;C:\Compilers\Delphi 10.4\Embarcadero\bin64;$PATH @SET LANGDIR=EN @SET PLATFORM= @SET PlatformSDK= $DCCDefines $DCCUnitSearch;C:\Compilers\Delphi 10.4\Embarcadero\lib\Win64\debug;C:\Compilers\Delphi 10.4\Embarcadero\Source\DUnit\src;C:\Compilers\Delphi 10.4\Embarcadero\lib\Win64\release;C:\Compilers\Delphi 10.4\Embarcadero\Imports;C:\Compilers\Delphi 10.4\Embarcadero\include @SET DCC_UsePackage=dxTileControlRS16;dxdborRS16;dxPScxVGridLnkRS16;cxLibraryRS16;dxLayoutControlRS16;dxPScxPivotGridLnkRS16;dxCoreRS16;cxExportRS16;dxBarRS16;cxSpreadSheetRS16;cxTreeListdxBarPopupMenuRS16;TeeDB;dxDBXServerModeRS16;dxPsPrVwAdvRS16;dxPSCoreRS16;dxPScxTLLnkRS16;dxPScxGridLnkRS16;cxPageControlRS16;dxRibbonRS16;DBXSybaseASEDriver;vclimg;cxTreeListRS16;dxComnRS16;vcldb;vcldsnap;dxBarExtDBItemsRS16;DBXDb2Driver;vcl;DBXMSSQLDriver;cxDataRS16;cxBarEditItemRS16;dxDockingRS16;dxPSDBTeeChartRS16;cxPageControldxBarPopupMenuRS16;cxSchedulerGridRS16;dxBarExtItemsRS16;dxPSLnksRS16;dxtrmdRS16;adortl;dxPSTeeChartRS16;cxVerticalGridRS16;dxPSdxLCLnkRS16;dxorgcRS16;dxWizardControlRS16;dxPScxExtCommonRS16;dxNavBarRS16;dxPSdxDBOCLnkRS16;cxSchedulerTreeBrowserRS16;Tee;DBXOdbcDriver;dxdbtrRS16;dxPScxCommonRS16;dxmdsRS16;dxSpellCheckerRS16;dxPScxSSLnkRS16;cxGridRS16;dxPSPrVwRibbonRS16;cxEditorsRS16;vclactnband;TeeUI;bindcompvcl;dxServerModeRS16;cxPivotGridRS16;dxPScxSchedulerLnkRS16;vclie;cxSchedulerRS16;vcltouch;cxSchedulerRibbonStyleEventEditorRS16;dxPSdxDBTVLnkRS16;VclSmp;dxTabbedMDIRS16;dxPSdxOCLnkRS16;dsnapcon;dxPSdxFCLnkRS16;dxThemeRS16;dxPScxPCProdRS16;vclx;dxFlowChartRS16;dxGDIPlusRS16;dxBarDBNavRS16;PGPTLSBBoxD16;fmx;IndySystem;DCBBoxD16;CloudBBoxD16;DBXInterBaseDriver;OfficeBBoxD16;DataSnapCommon;DbxCommonDriver;EDIBBoxD16;dbxcds;FTPSBBoxCliD16;ZIPBBoxD16;DBXOracleDriver;CustomIPTransport;HTTPBBoxCliD16;dsnap;IndyCore;HTTPBBoxSrvD16;FmxTeeUI;DAVBBoxCliD16;inetdbxpress;SSLBBoxCliD16;PGPMIMEBBoxD16;XMLBBoxD16;IPIndyImpl;SSHBBoxCliD16;LDAPBBoxD16;bindcompfmx;XMLBBoxSecD16;rtl;dbrtl;DbxClientDriver;bindcomp;DsgnBBoxD16;xmlrtl;PDFBBoxD16;IndyProtocols;FTPSBBoxSrvD16;FMXTee;bindengine;DAVBBoxSrvD16;PGPBBoxD16;SSLBBoxSrvD16;MailBBoxD16;MIMEBBoxD16;SMIMEBBoxD16;DBXInformixDriver;PGPSSHBBoxD16;PGPLDAPBBoxD16;BaseBBoxD16;DBXFirebirdDriver;inet;DBXSybaseASADriver;dbexpress; @SET DCC_MapFile=3 "  # Create rsvars.bat file
-                    Set-Content -Path "${ProjectLocation}build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`nmsbuild `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win64;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\;DCC_LocalDebugSymbols=false;DCC_SymbolReferenceInfo=0;DCC_DebugInformation=2 > `"$StandardBuildLog`" "  # Create build.bat file
-                    Set-Content -Path "${ProjectLocation}debug-build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`nmsbuild `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Debug;platform=Win64;EnvOptionsWarn=false$DCCConsoleTarget;DCC_PlatformTarget=Win64;DCC_RemoteDebug=true;DCC_ExeOutput=..\debug;DCC_MapFile=3;DCC_DebugInfoInExe=true;DCC_Optimize=false;DCC_DebugDCUs=true;DCC_GenerateStackFrames=true > `"$DebugBuildLog`""  # Create debug-build.bat file
+                    Set-Content -Path "${ProjectLocation}build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`n`"$MSBuildPath`" `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win64;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\;DCC_LocalDebugSymbols=false;DCC_SymbolReferenceInfo=0;DCC_DebugInformation=2 > `"$StandardBuildLog`" "  # Create build.bat file
+                    Set-Content -Path "${ProjectLocation}debug-build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`n`"$MSBuildPath`" `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Debug;platform=Win64;EnvOptionsWarn=false$DCCConsoleTarget;DCC_PlatformTarget=Win64;DCC_RemoteDebug=true;DCC_ExeOutput=..\debug;DCC_MapFile=3;DCC_DebugInfoInExe=true;DCC_Optimize=false;DCC_DebugDCUs=true;DCC_GenerateStackFrames=true > `"$DebugBuildLog`""  # Create debug-build.bat file
                 } else {
                     throw "Unable to locate configuration file `"$ProjectLocation\dcc64.cfg`". Please make sure this file exists in the project source folder."
                 }
             } else {
                 Set-Content -Path "${ProjectLocation}rsvars.bat" -Value "@SET BDS=C:\Compilers\Delphi 10.4\Embarcadero @SET BDSINCLUDE=C:\Compilers\Delphi 10.4\Embarcadero\include @SET BDSCOMMONDIR=C:\Users\Public\Documents\Embarcadero @SET FrameworkDir=C:\Windows\Microsoft.NET\Framework\v4.0.30319 @SET FrameworkVersion=v4.0 @SET FrameworkSDKDir= @SET PATH=$FrameworkDir;$FrameworkSDKDir;C:\Compilers\Delphi 10.4\Embarcadero\bin;C:\Compilers\Delphi 10.4\Embarcadero\bin64;$PATH @SET LANGDIR=EN @SET PLATFORM= @SET PlatformSDK= $DCCDefines $DCCUnitSearch;C:\Compilers\Delphi 10.4\Embarcadero\lib\Win32\debug;C:\Compilers\Delphi 10.4\Embarcadero\Source\DUnit\src;C:\Compilers\Delphi 10.4\Embarcadero\lib\Win32\release;C:\Compilers\Delphi 10.4\Embarcadero\Imports;C:\Compilers\Delphi 10.4\Embarcadero\include @SET DCC_UsePackage=dxTileControlRS16;dxdborRS16;dxPScxVGridLnkRS16;cxLibraryRS16;dxLayoutControlRS16;dxPScxPivotGridLnkRS16;dxCoreRS16;cxExportRS16;dxBarRS16;cxSpreadSheetRS16;cxTreeListdxBarPopupMenuRS16;TeeDB;dxDBXServerModeRS16;dxPsPrVwAdvRS16;dxPSCoreRS16;dxPScxTLLnkRS16;dxPScxGridLnkRS16;cxPageControlRS16;dxRibbonRS16;DBXSybaseASEDriver;vclimg;cxTreeListRS16;dxComnRS16;vcldb;vcldsnap;dxBarExtDBItemsRS16;DBXDb2Driver;vcl;DBXMSSQLDriver;cxDataRS16;cxBarEditItemRS16;dxDockingRS16;dxPSDBTeeChartRS16;cxPageControldxBarPopupMenuRS16;cxSchedulerGridRS16;dxBarExtItemsRS16;dxPSLnksRS16;dxtrmdRS16;adortl;dxPSTeeChartRS16;cxVerticalGridRS16;dxPSdxLCLnkRS16;dxorgcRS16;dxWizardControlRS16;dxPScxExtCommonRS16;dxNavBarRS16;dxPSdxDBOCLnkRS16;cxSchedulerTreeBrowserRS16;Tee;DBXOdbcDriver;dxdbtrRS16;dxPScxCommonRS16;dxmdsRS16;dxSpellCheckerRS16;dxPScxSSLnkRS16;cxGridRS16;dxPSPrVwRibbonRS16;cxEditorsRS16;vclactnband;TeeUI;bindcompvcl;dxServerModeRS16;cxPivotGridRS16;dxPScxSchedulerLnkRS16;vclie;cxSchedulerRS16;vcltouch;cxSchedulerRibbonStyleEventEditorRS16;dxPSdxDBTVLnkRS16;VclSmp;dxTabbedMDIRS16;dxPSdxOCLnkRS16;dsnapcon;dxPSdxFCLnkRS16;dxThemeRS16;dxPScxPCProdRS16;vclx;dxFlowChartRS16;dxGDIPlusRS16;dxBarDBNavRS16;PGPTLSBBoxD16;fmx;IndySystem;DCBBoxD16;CloudBBoxD16;DBXInterBaseDriver;OfficeBBoxD16;DataSnapCommon;DbxCommonDriver;EDIBBoxD16;dbxcds;FTPSBBoxCliD16;ZIPBBoxD16;DBXOracleDriver;CustomIPTransport;HTTPBBoxCliD16;dsnap;IndyCore;HTTPBBoxSrvD16;FmxTeeUI;DAVBBoxCliD16;inetdbxpress;SSLBBoxCliD16;PGPMIMEBBoxD16;XMLBBoxD16;IPIndyImpl;SSHBBoxCliD16;LDAPBBoxD16;bindcompfmx;XMLBBoxSecD16;rtl;dbrtl;DbxClientDriver;bindcomp;DsgnBBoxD16;xmlrtl;PDFBBoxD16;IndyProtocols;FTPSBBoxSrvD16;FMXTee;bindengine;DAVBBoxSrvD16;PGPBBoxD16;SSLBBoxSrvD16;MailBBoxD16;MIMEBBoxD16;SMIMEBBoxD16;DBXInformixDriver;PGPSSHBBoxD16;PGPLDAPBBoxD16;BaseBBoxD16;DBXFirebirdDriver;inet;DBXSybaseASADriver;dbexpress; @SET DCC_MapFile=3"  # Create rsvars.bat file
-                Set-Content -Path "${ProjectLocation}build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`nmsbuild `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win32;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\;DCC_LocalDebugSymbols=false;DCC_SymbolReferenceInfo=0;DCC_DebugInformation=2 > `"$StandardBuildLog`" "  # Create build.bat file
-                Set-Content -Path "${ProjectLocation}debug-build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`nmsbuild `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Debug;platform=Win32;EnvOptionsWarn=false$DCCConsoleTarget;DCC_PlatformTarget=Win32;DCC_RemoteDebug=true;DCC_ExeOutput=..\debug;DCC_MapFile=3;DCC_DebugInfoInExe=true;DCC_Optimize=false;DCC_DebugDCUs=true;DCC_GenerateStackFrames=true > `"$DebugBuildLog`""  # Create debug-build.bat file
+                Set-Content -Path "${ProjectLocation}build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`n`"$MSBuildPath`" `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win32;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\;DCC_LocalDebugSymbols=false;DCC_SymbolReferenceInfo=0;DCC_DebugInformation=2 > `"$StandardBuildLog`" "  # Create build.bat file
+                Set-Content -Path "${ProjectLocation}debug-build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`n`"$MSBuildPath`" `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Debug;platform=Win32;EnvOptionsWarn=false$DCCConsoleTarget;DCC_PlatformTarget=Win32;DCC_RemoteDebug=true;DCC_ExeOutput=..\debug;DCC_MapFile=3;DCC_DebugInfoInExe=true;DCC_Optimize=false;DCC_DebugDCUs=true;DCC_GenerateStackFrames=true > `"$DebugBuildLog`""  # Create debug-build.bat file
             }
         } else {
             if ("$Compiler" -like "*XE6*") {  # if XE6
                 if (Test-Path "$ProjectLocation\dcc64.cfg") {  # If dcc64.cfg file exists
                     Set-Content -Path "${ProjectLocation}rsvars.bat" -Value "@SET BDS=C:\Compilers\Delphi XE6\Embarcadero @SET BDSINCLUDE=C:\Compilers\Delphi XE6\Embarcadero\include @SET BDSCOMMONDIR=C:\Users\Public\Documents\Embarcadero @SET FrameworkDir=C:\Windows\Microsoft.NET\Framework\v3.5 @SET FrameworkVersion=v3.5 @SET FrameworkSDKDir= @SET PATH=$FrameworkDir;$FrameworkSDKDir;C:\Compilers\Delphi XE6\Embarcadero\bin;C:\Compilers\Delphi XE6\Embarcadero\bin64;$PATH @SET LANGDIR=EN @SET PLATFORM= @SET PlatformSDK= $DCCDefines $DCCUnitSearch;C:\Compilers\Delphi XE6\Embarcadero\lib\Win64\debug;C:\Compilers\Delphi XE6\Embarcadero\Source\DUnit\src;C:\Compilers\Delphi XE6\Embarcadero\lib\Win64\release;C:\Compilers\Delphi XE6\Embarcadero\Imports;C:\Compilers\Delphi XE6\Embarcadero\include @SET DCC_UsePackage=dxTileControlRS16;dxdborRS16;dxPScxVGridLnkRS16;cxLibraryRS16;dxLayoutControlRS16;dxPScxPivotGridLnkRS16;dxCoreRS16;cxExportRS16;dxBarRS16;cxSpreadSheetRS16;cxTreeListdxBarPopupMenuRS16;TeeDB;dxDBXServerModeRS16;dxPsPrVwAdvRS16;dxPSCoreRS16;dxPScxTLLnkRS16;dxPScxGridLnkRS16;cxPageControlRS16;dxRibbonRS16;DBXSybaseASEDriver;vclimg;cxTreeListRS16;dxComnRS16;vcldb;vcldsnap;dxBarExtDBItemsRS16;DBXDb2Driver;vcl;DBXMSSQLDriver;cxDataRS16;cxBarEditItemRS16;dxDockingRS16;dxPSDBTeeChartRS16;cxPageControldxBarPopupMenuRS16;cxSchedulerGridRS16;dxBarExtItemsRS16;dxPSLnksRS16;dxtrmdRS16;adortl;dxPSTeeChartRS16;cxVerticalGridRS16;dxPSdxLCLnkRS16;dxorgcRS16;dxWizardControlRS16;dxPScxExtCommonRS16;dxNavBarRS16;dxPSdxDBOCLnkRS16;cxSchedulerTreeBrowserRS16;Tee;DBXOdbcDriver;dxdbtrRS16;dxPScxCommonRS16;dxmdsRS16;dxSpellCheckerRS16;dxPScxSSLnkRS16;cxGridRS16;dxPSPrVwRibbonRS16;cxEditorsRS16;vclactnband;TeeUI;bindcompvcl;dxServerModeRS16;cxPivotGridRS16;dxPScxSchedulerLnkRS16;vclie;cxSchedulerRS16;vcltouch;cxSchedulerRibbonStyleEventEditorRS16;dxPSdxDBTVLnkRS16;VclSmp;dxTabbedMDIRS16;dxPSdxOCLnkRS16;dsnapcon;dxPSdxFCLnkRS16;dxThemeRS16;dxPScxPCProdRS16;vclx;dxFlowChartRS16;dxGDIPlusRS16;dxBarDBNavRS16;PGPTLSBBoxD16;fmx;IndySystem;DCBBoxD16;CloudBBoxD16;DBXInterBaseDriver;OfficeBBoxD16;DataSnapCommon;DbxCommonDriver;EDIBBoxD16;dbxcds;FTPSBBoxCliD16;ZIPBBoxD16;DBXOracleDriver;CustomIPTransport;HTTPBBoxCliD16;dsnap;IndyCore;HTTPBBoxSrvD16;FmxTeeUI;DAVBBoxCliD16;inetdbxpress;SSLBBoxCliD16;PGPMIMEBBoxD16;XMLBBoxD16;IPIndyImpl;SSHBBoxCliD16;LDAPBBoxD16;bindcompfmx;XMLBBoxSecD16;rtl;dbrtl;DbxClientDriver;bindcomp;DsgnBBoxD16;xmlrtl;PDFBBoxD16;IndyProtocols;FTPSBBoxSrvD16;FMXTee;bindengine;DAVBBoxSrvD16;PGPBBoxD16;SSLBBoxSrvD16;MailBBoxD16;MIMEBBoxD16;SMIMEBBoxD16;DBXInformixDriver;PGPSSHBBoxD16;PGPLDAPBBoxD16;BaseBBoxD16;DBXFirebirdDriver;inet;DBXSybaseASADriver;dbexpress; @SET DCC_MapFile=3"  # Create rsvars.bat file
-                    Set-Content -Path "${ProjectLocation}build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`nmsbuild `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win64;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\;DCC_LocalDebugSymbols=false;DCC_SymbolReferenceInfo=0;DCC_DebugInformation=2 > `"$StandardBuildLog`" "  # Create build.bat file
-                    Set-Content -Path "${ProjectLocation}debug-build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`nmsbuild `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Debug;platform=Win64;EnvOptionsWarn=false$DCCConsoleTarget;DCC_PlatformTarget=Win64;DCC_RemoteDebug=true;DCC_ExeOutput=..\debug;DCC_MapFile=3;DCC_DebugInfoInExe=true;DCC_Optimize=false;DCC_DebugDCUs=true;DCC_GenerateStackFrames=true > `"$DebugBuildLog`""  # Create debug-build.bat file
+                    Set-Content -Path "${ProjectLocation}build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`n`"$MSBuildPath`" `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win64;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\;DCC_LocalDebugSymbols=false;DCC_SymbolReferenceInfo=0;DCC_DebugInformation=2 > `"$StandardBuildLog`" "  # Create build.bat file
+                    Set-Content -Path "${ProjectLocation}debug-build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`n`"$MSBuildPath`" `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Debug;platform=Win64;EnvOptionsWarn=false$DCCConsoleTarget;DCC_PlatformTarget=Win64;DCC_RemoteDebug=true;DCC_ExeOutput=..\debug;DCC_MapFile=3;DCC_DebugInfoInExe=true;DCC_Optimize=false;DCC_DebugDCUs=true;DCC_GenerateStackFrames=true > `"$DebugBuildLog`""  # Create debug-build.bat file
                 } else {
                     Set-Content -Path "${ProjectLocation}rsvars.bat" -Value "@SET BDS=C:\Compilers\Delphi $Compiler\Embarcadero @SET BDSCOMMONDIR=C:\Users\Public\Documents\RAD Studio\9.0 @SET FrameworkDir=C:\Windows\Microsoft.NET\Framework\v3.5 @SET FrameworkVersion=v3.5 @SET FrameworkSDKDir= @SET PATH=$FrameworkDir;$FrameworkSDKDir;$BDS\bin;$PATH @SET LANGDIR=EN @SET DCC_MapFile=3 $DCCDefines $DCCUnitSearch"  # Create rsvars.bat file
-                    Set-Content -Path "${ProjectLocation}build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`nmsbuild `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win32;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\;DCC_LocalDebugSymbols=false;DCC_SymbolReferenceInfo=0;DCC_DebugInformation=2 > `"$StandardBuildLog`" "  # Create build.bat file
-                    Set-Content -Path "${ProjectLocation}debug-build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`nmsbuild `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win32;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\debug;DCC_DebugInfoInExe=true;DCC_Optimize=false;DCC_GenerateStackFrames=true > `"$DebugBuildLog`" "  # Create debug-build.bat file
+                    Set-Content -Path "${ProjectLocation}build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`n`"$MSBuildPath`" `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win32;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\;DCC_LocalDebugSymbols=false;DCC_SymbolReferenceInfo=0;DCC_DebugInformation=2 > `"$StandardBuildLog`" "  # Create build.bat file
+                    Set-Content -Path "${ProjectLocation}debug-build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`n`"$MSBuildPath`" `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win32;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\debug;DCC_DebugInfoInExe=true;DCC_Optimize=false;DCC_GenerateStackFrames=true > `"$DebugBuildLog`" "  # Create debug-build.bat file
                 }
             } else {
                 Set-Content -Path "${ProjectLocation}rsvars.bat" -Value "@SET BDS=C:\Compilers\Delphi $Compiler\Embarcadero @SET BDSCOMMONDIR=C:\Users\Public\Documents\RAD Studio\9.0 @SET FrameworkDir=C:\Windows\Microsoft.NET\Framework\v3.5 @SET FrameworkVersion=v3.5 @SET FrameworkSDKDir= @SET PATH=$FrameworkDir;$FrameworkSDKDir;$BDS\bin;$PATH @SET LANGDIR=EN @SET DCC_MapFile=3 $DCCDefines $DCCUnitSearch"  # Create rsvars.bat file
-                Set-Content -Path "${ProjectLocation}build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`nmsbuild `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win32;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\;DCC_LocalDebugSymbols=false;DCC_SymbolReferenceInfo=0;DCC_DebugInformation=true > `"$StandardBuildLog`" "  # Create build.bat file
-                Set-Content -Path "${ProjectLocation}debug-build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`nmsbuild `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win32;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\debug;DCC_DebugInfoInExe=true;DCC_Optimize=false;DCC_GenerateStackFrames=true > `"$DebugBuildLog`" "  # Create debug-build.bat file
+                Set-Content -Path "${ProjectLocation}build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`n`"$MSBuildPath`" `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win32;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\;DCC_LocalDebugSymbols=false;DCC_SymbolReferenceInfo=0;DCC_DebugInformation=true > `"$StandardBuildLog`" "  # Create build.bat file
+                Set-Content -Path "${ProjectLocation}debug-build.bat" -Value "call `"${ProjectLocation}rsvars.bat`"`r`n`"$MSBuildPath`" `"$ProjectName`" /verbosity:diag /clp:ShowCommandLine /t:Rebuild /p:Config=Release;platform=Win32;EnvOptionsWarn=false$DCCConsoleTarget;DCC_ExeOutput=..\debug;DCC_DebugInfoInExe=true;DCC_Optimize=false;DCC_GenerateStackFrames=true > `"$DebugBuildLog`" "  # Create debug-build.bat file
             }
         }
         #endregion Generate build scripts
+        Ensure-PADelphiTargetsImport -ProjectPath "${ProjectLocation}$ProjectName" -Compiler $Compiler
+        Repair-PARsVarsFile -Path "${ProjectLocation}rsvars.bat"
+        Disable-PAMissingRidlPreBuildEvents -ProjectPath "${ProjectLocation}$ProjectName"
+        $ReleaseOutputDirectory = (Resolve-Path -Path (Join-Path -Path $ProjectLocation -ChildPath '..')).Path
+        Clear-PADelphiBuildOutputs -ProjectPath "${ProjectLocation}$ProjectName" -OutputDirectory $ProjectLocation
+        Clear-PADelphiIntermediateOutputs -Directory $ProjectLocation
+        Clear-PADelphiBuildOutputs -ProjectPath "${ProjectLocation}$ProjectName" -OutputDirectory $ReleaseOutputDirectory
+        $DebugOutputDirectory = Join-Path -Path $ReleaseOutputDirectory -ChildPath "debug"
+        if (Test-Path $DebugOutputDirectory) {
+            Clear-PADelphiBuildOutputs -ProjectPath "${ProjectLocation}$ProjectName" -OutputDirectory $DebugOutputDirectory
+        }
 
         try {  # 
             Invoke-DosCommand -Command "`"${ProjectLocation}build.bat`"" -WorkingDirectory "$ProjectLocation"  # Build standard projects
         } finally {  # 
-            Invoke-CheckBuildLogFile   # Check standard build result
+            Invoke-Check-build-log-file -LogFile $StandardBuildLog -Compiler $Compiler  # Check standard build result
         }
         try {  # 
             Invoke-DosCommand -Command "`"${ProjectLocation}debug-build.bat`"" -WorkingDirectory "$ProjectLocation"  # Build debug projects
         } finally {  # 
-            Invoke-CheckBuildLogFile   # Check debug build result
+            Invoke-Check-build-log-file -LogFile $DebugBuildLog -Compiler $Compiler  # Check debug build result
         }
         $ExeName = "$ProjectName"  # Set ExeName
         $ExeName = $ExeName.Replace('.dproj', '.exe')  # Replace .dproj with .exe in ExeName
@@ -893,10 +1438,26 @@ function Invoke-Build-project-DPR-file {
             # Check result in log file
         }
         if (Test-Path "$ProjectLocation..\$ExeName") {  # If exe exists
-            Invoke-SignFile   # Sign exe
+            Invoke-SignFile -FileName "$ProjectLocation..\$ExeName" -Description "$ExeName"  # Sign exe
         }
         # [DISABLED] Stop Macro Execution
     }
+}
+
+function Invoke-BuildProject {
+    param(
+        [string]$Compiler = $DELPHI_VERSION,
+        [string]$ProjectFile = $VAR_RESULT_TEXT
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Compiler)) {
+        throw "Invoke-BuildProject requires a compiler version."
+    }
+    if ([string]::IsNullOrWhiteSpace($ProjectFile)) {
+        throw "Invoke-BuildProject requires a project file."
+    }
+
+    Invoke-Build-project-DPR-file -Compiler $Compiler -ProjectFile $ProjectFile
 }
 
 
@@ -907,19 +1468,30 @@ function Invoke-Check-build-log-file {
         $Compiler
     )
 
+    if (-not (Test-Path $LogFile)) {
+        throw "Build log file was not created: $LogFile"
+    }
+
     if ($Compiler -eq "XE2" -or $Compiler -eq "XE6" -or $Compiler -eq "10.4") {  # If XE2, XE6, 10.4
+        $FullLogText = Get-Content -Path "$LogFile" -Raw
         $LogText = Find-InFile -Path "$LogFile" -Find "Build succeeded."  # Search log file for "Build succeeded." string
         if ("$LogText" -ne "1") {  # If not found
             $LogText = Find-InFile -Path "$LogFile" -Find "Build FAILED."  # Search log file for "Build FAILED." string
             if ("$LogText" -ne "1") {  # If not found
+                if ($FullLogText -match '(?im)(^.*(:\s*error\s+|error\s+MSB\d+|DCC\s+(Fatal|Error)|Fatal:).*$)') {
+                    throw "Failed to build project. See $LogFile. First error: $($Matches[1].Trim())"
+                }
                 throw "Searching log file `"$LogFile`" for either `"Build succeeded.`" or `"Build FAILED.`" produced no result. "
             } else {
                 $ResultText = ""  # Clear ResultText
-                $LogText = Get-Content -Path "$LogFile" -Raw  # Read LogFile into LogText
-                $ResultText = Get-SubstringBetween -Input "$LogText" -Start "Task `"DCC`"" -End "Done executing task `"DCC`""  # Extract error message
+                $ResultText = Get-SubstringBetween -Input "$FullLogText" -Start "Task `"DCC`"" -End "Done executing task `"DCC`""  # Extract error message
                 if ("$ResultText" -ne "") {  # If ResultText not empty
                     throw "Failed to build project:  $ResultText"
                 }
+                if ($FullLogText -match '(?im)(^.*(:\s*error\s+|error\s+MSB\d+|DCC\s+(Fatal|Error)|Fatal:).*$)') {
+                    throw "Failed to build project. See $LogFile. First error: $($Matches[1].Trim())"
+                }
+                throw "Failed to build project. See $LogFile."
             }
         }
     } else {
@@ -938,22 +1510,24 @@ function Invoke-Check-build-log-file {
 
 
 # === Submacro: Sign file ===
-function Invoke-Sign-file {
+function Invoke-SignFile {
     param(
         $FileName,
         $Description
     )
 
-    # [DISABLED] Execute DOS Command (Sign final file) - Sign final file
-    $CommandResultText = Invoke-DosCommand -Command "powershell.exe -Command `"& 'C:\work\BuildStudio\signfile.ps1' -FilePath '$FileName' -Description '$Description'`""  # Sign file
-    if ("$CommandResult" -ne "0") {  # Check for errors
-        throw "Failed to sign setup EXE  $CommandResultText"
+    $signScript = Join-Path $PSScriptRoot 'signfile.ps1'
+    $SignResultText = Invoke-DosCommand -Command (New-PASignFileCommand -SignScriptPath $signScript -FilePath $FileName -Description $Description)  # Sign file
+    if ($script:LastExitCode -ne 0) {  # Check for errors
+        throw "Failed to sign setup EXE  $SignResultText"
     }
-    $CommandResultText = Invoke-DosCommand -Command "C:\Compilers\SignTool\signtool.exe verify /pa `"$FileName`""  # Verify file signature
-    if ("$CommandResult" -ne "0") {  # Check for errors
-        throw "Failed to verify EXE file:  $CommandResultText"
+    $CommandResultText = Invoke-DosCommand -Command (New-PASignVerifyCommand -FilePath $FileName)  # Verify file signature
+    if ($script:LastExitCode -ne 0) {  # Check for errors
+        throw "Failed to verify EXE file after signing command completed:  $CommandResultText"
     }
 }
+
+Set-Alias -Name Invoke-Sign-file -Value Invoke-SignFile
 
 try {  # 
 
@@ -975,7 +1549,10 @@ try {  #
         Write-Log "[DEBUG] NIGHTLY_BUILD='$NIGHTLY_BUILD' NEXT_PROJECT_TO_BUILD='$NEXT_PROJECT_TO_BUILD'"
         if ("$NIGHTLY_BUILD" -ne "TRUE") {  # If not nightly build
             Write-Log "[DEBUG] Not nightly build, checking NEXT_PROJECT_TO_BUILD"
-            if ("$NEXT_PROJECT_TO_BUILD" -ne "0") {  # If building another project in a loop
+            if (-not [string]::IsNullOrWhiteSpace($INI_SECTION)) {  # Project supplied on command line
+                Write-Log "[DEBUG] Using supplied INI_SECTION: $INI_SECTION"
+                $VAR_RESULT = "1"
+            } elseif ("$NEXT_PROJECT_TO_BUILD" -ne "0") {  # If building another project in a loop
                 Write-Log "[DEBUG] Using NEXT_PROJECT_TO_BUILD: $NEXT_PROJECT_TO_BUILD"
                 $VAR_RESULT = "$NEXT_PROJECT_TO_BUILD"  # Set VAR_RESULT to NEXT_PROJECT_TO_BUILD
             } else {
@@ -1239,7 +1816,7 @@ try {  #
         Copy-FileEx -Source "\\$VAULT_SERVER_ADDRESS\Setup Include Files\dbExpress\dbexp*da.dll" -Destination "$BUILD_TEMP_PATH\" -Force  # 
         Copy-FileEx -Source "\\$VAULT_SERVER_ADDRESS\Setup Include Files\winsys\midas.dll" -Destination "$BUILD_TEMP_PATH\" -Force  # 
     } else {
-        if (("$DELPHI_VERSION" -eq "XE6") -and ("$DELPHI_VERSION" -eq "10.4")) {  # if XE6, 10.4
+        if (("$DELPHI_VERSION" -eq "XE6") -or ("$DELPHI_VERSION" -eq "10.4")) {  # if XE6, 10.4
             if (Test-Path "$BUILD_TEMP_PATH\source\dcc32.cfg") {  # If dcc32.cfg file exists
                 Copy-FileEx -Source "\\$VAULT_SERVER_ADDRESS\Setup Include Files\dbExpress\dbexp*da4?.dll" -Destination "$BUILD_TEMP_PATH\" -Force  # 
                 Copy-FileEx -Source "\\$VAULT_SERVER_ADDRESS\Setup Include Files\winsys\midas.dll" -Destination "$BUILD_TEMP_PATH\" -Force  # 
@@ -1264,84 +1841,82 @@ try {  #
 
     #region Initialise variables
     Write-Log "--- Initialise variables ---"
+	
+	$BUILD_VERSION_SET = "N"
+	
     if ("$BUILD_VERSION_SET" -ne "Y") {  # If BUILD_VERSION_SET <> Y
-        $SETUP_PASQL_FILE_NAME = ""  # Set SETUP_PASQL_FILE_NAME to ''
-        $PASQL_SCRIPTS_HAVE_CHANGED = "FALSE"  # Set PASQL_SCRIPTS_HAVE_CHANGED to FALSE
-        $V_MAJOR = "0"  # Set V_MAJOR to 0
-        $V_MINOR = "0"  # Set V_MINOR to 0
-        $V_RELEASE = "0"  # Set V_RELEASE to 0
-        $V_BUILD = "0"  # Set V_BUILD to 0
-        $BUILD_VERSION = "0.0.0.0"  # Set BUILD_VERSION to 0.0.0.0
-        $IS_2_TIER = "TRUE"  # Set IS_2_TIER to TRUE
+	    Write-Log "Initialising build variables..."
+		try {
+            $SETUP_PASQL_FILE_NAME = ""  # Set SETUP_PASQL_FILE_NAME to ''
+            $PASQL_SCRIPTS_HAVE_CHANGED = "FALSE"  # Set PASQL_SCRIPTS_HAVE_CHANGED to FALSE
+            $V_MAJOR = "0"  # Set V_MAJOR to 0
+            $V_MINOR = "0"  # Set V_MINOR to 0
+            $V_RELEASE = "0"  # Set V_RELEASE to 0
+            $V_BUILD = "0"  # Set V_BUILD to 0
+            $BUILD_VERSION = "0.0.0.0"  # Set BUILD_VERSION to 0.0.0.0
+            $IS_2_TIER = "TRUE"  # Set IS_2_TIER to TRUE
+            $CAN_RUN_TESTS = "YES"  # Set CAN_RUN_TESTS to YES
+            $BUILD_SETUPS = "TRUE"  # Set BUILD_SETUPS to TRUE
+            Write-Log "Variables initialized successfully"
+        } catch {
+            Write-Log "=== ERROR CAUGHT ==="
+            Write-Log "Error Message: $($_.Exception.Message)"
+            Write-Log "Error Line: $($_.InvocationInfo.ScriptLineNumber)"
+            Write-Log "Full Stack: $($_.Exception | Format-List -Force | Out-String)"
+            throw
+        }
     }
     #endregion Initialise variables
-
 
     #region Get the highest version from project files and prompt for new version
     Write-Log "--- Get the highest version from project files and prompt for new version ---"
     if ("$BUILD_VERSION_SET" -ne "Y") {  # If BUILD_VERSION_SET <> Y
         if ("$DELPHI_VERSION" -ceq "10.4") {  # Delphi 10.4
-            foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\source\*.dproj" -ErrorAction SilentlyContinue)) {  # Loop through DPROJ project files, project name in VAR_RESULT_TEXT
-                $VAR_RESULT_TEXT = $__file.FullName
-                # If XML Node/Attribute Exists: //*[local-name()='VerInfo_MajorVer']
-                $FIND_RESULT = 'False'
-                try {
-                    [xml]$_xml = Get-Content -Path "$VAR_RESULT_TEXT" -Raw
-                    $_nsMgr = [System.Xml.XmlNamespaceManager]::new($_xml.NameTable)
-                    $_node = $_xml.SelectSingleNode("//*[local-name()='VerInfo_MajorVer']", $_nsMgr)
-                    if ($_node) { $FIND_RESULT = 'True' }
-                } catch { Write-Log "XML query failed: $_" }
-                if ($FIND_RESULT -ceq 'True') {
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VerInfo_MajorVer'] "  # V_MAJOR
-                } else {
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"MajorVer`"] "  # V_MAJOR
-                }
-                # If XML Node/Attribute Exists: //*[local-name()='VerInfo_MinorVer']
-                $FIND_RESULT = 'False'
-                try {
-                    [xml]$_xml = Get-Content -Path "$VAR_RESULT_TEXT" -Raw
-                    $_nsMgr = [System.Xml.XmlNamespaceManager]::new($_xml.NameTable)
-                    $_node = $_xml.SelectSingleNode("//*[local-name()='VerInfo_MinorVer'] ", $_nsMgr)
-                    if ($_node) { $FIND_RESULT = 'True' }
-                } catch { Write-Log "XML query failed: $_" }
-                if ($FIND_RESULT -ceq 'True') {
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VerInfo_MinorVer'] "  # V_MINOR
-                } else {
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"MinorVer`"] "  # V_MINOR
-                }
-                # If XML Node/Attribute Exists: //*[local-name()='VerInfo_Release']
-                $FIND_RESULT = 'False'
-                try {
-                    [xml]$_xml = Get-Content -Path "$VAR_RESULT_TEXT" -Raw
-                    $_nsMgr = [System.Xml.XmlNamespaceManager]::new($_xml.NameTable)
-                    $_node = $_xml.SelectSingleNode("//*[local-name()='VerInfo_Release']", $_nsMgr)
-                    if ($_node) { $FIND_RESULT = 'True' }
-                } catch { Write-Log "XML query failed: $_" }
-                if ($FIND_RESULT -ceq 'True') {
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VerInfo_Release'] "  # V_RELEASE
-                } else {
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"Release`"] "  # V_RELEASE
-                }
-                # If XML Node/Attribute Exists: //*[local-name()='VerInfo_Build']
-                $FIND_RESULT = 'False'
-                try {
-                    [xml]$_xml = Get-Content -Path "$VAR_RESULT_TEXT" -Raw
-                    $_nsMgr = [System.Xml.XmlNamespaceManager]::new($_xml.NameTable)
-                    $_node = $_xml.SelectSingleNode("//*[local-name()='VerInfo_Build'] ", $_nsMgr)
-                    if ($_node) { $FIND_RESULT = 'True' }
-                } catch { Write-Log "XML query failed: $_" }
-                if ($FIND_RESULT -ceq 'True') {
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VerInfo_Build'] "  # V_BUILD
-                } else {
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"Build`"] "  # V_BUILD
-                }
-                # Script block (VBScript): Set BUILD_VERSION to higher of two versions
-                $TEMP = "$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"
-                if ((Compare-Versions $TEMP $BUILD_VERSION) -gt 0) {
-                  $BUILD_VERSION = $TEMP
-                  Write-Log "BUILD_VERSION updated to: $BUILD_VERSION"
-                }
+		    Write-Log "Just entered inside DELPHI_VERSION -ceq 10.4"
+			
+            Write-Log "[DEBUG] Searching for .dproj files in: $BUILD_TEMP_PATH\Source"
+			
+            $BUILD_VERSION = "0.0.0.0"
+            $projectFiles = @(Get-ChildItem -Path "$BUILD_TEMP_PATH\Source\*.dproj" -ErrorAction SilentlyContinue)
+			
+			Write-Log "[DEBUG] Found $($projectFiles.Count) .dproj files"
+ 
+            # Debug: Check if files were found and are readable
+			$testFile = Get-ChildItem -Path "$BUILD_TEMP_PATH\Source\Collect.dproj" -ErrorAction SilentlyContinue
+            if ($testFile) {
+                Write-Log "[DEBUG] Test file found: $($testFile.FullName)"
+                Write-Log "[DEBUG] File size: $($testFile.Length) bytes"
+    
+                # Try to read first few lines
+                $firstLines = Get-Content -Path $testFile.FullName -TotalCount 5 -ErrorAction SilentlyContinue
+                Write-Log "[DEBUG] First 5 lines:`n$($firstLines -join "`n")"
+            } else {
+                Write-Log "[ERROR] Cannot find Collect.dproj in $BUILD_TEMP_PATH\Source"
             }
+			
+ #           foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\source\*.dproj" -ErrorAction SilentlyContinue)) {  # Loop through DPROJ project files, project name in VAR_RESULT_TEXT
+            foreach ($projectFile in $projectFiles) {
+                Write-Log "[DEBUG] Processing: $($projectFile.Name)"
+				
+				$projVersion = Get-ProjectVersion -ProjectPath $projectFile.FullName
+                $projVersionString = "$($projVersion.Major).$($projVersion.Minor).$($projVersion.Release).$($projVersion.Build)" 
+				
+				# Compare versions
+				$comparison = Compare-Versions -Version1 $projVersionString -Version2 $BUILD_VERSION
+				if ($comparison -gt 0) {
+					$BUILD_VERSION = $projVersionString
+					Write-Log "[DEBUG] Updated BUILD_VERSION to: $BUILD_VERSION"
+                }
+				
+				
+            }
+			if ($BUILD_VERSION -eq "0.0.0.0") {
+				Write-Log "[WARNING] No version information found in project files, using default 0.0.0.0"
+			}
+			else {
+				Write-Log "[DEBUG] Highest version found: $BUILD_VERSION"
+			}
+			
         } else {
             if ("$DELPHI_VERSION" -ceq "6") {  # Delphi 6
                 foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\source\*.dof" -ErrorAction SilentlyContinue)) {  # Loop through DOF project files, project name in VAR_RESULT_TEXT
@@ -1374,6 +1949,9 @@ try {  #
             }
         }
     }
+	
+	Write-Log "Just after getting highest Version"
+	
     # To force specific version number, check both steps below
     # [DISABLED] Set/Reset Variable Value (Set BUILD_VERSION here to overcome issues with source files) - Set BUILD_VERSION here to overcome issues with source files
     # [DISABLED] Set/Reset Variable Value (Set BUILD_VERSION_SET = Y) - Set BUILD_VERSION_SET = Y
@@ -1394,9 +1972,11 @@ try {  #
         $T_REL = $V_RELEASE + 1
         $T_BLD = $V_BUILD + 1
 
-        Write-Log "Parsed version: $V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"        if (("$NIGHTLY_BUILD" -ne "TRUE") -and ("$SOURCE_CONTROL_LABEL" -eq "")) {  # If not nightly build and SOURCE_CONTROL_LABEL is not set
+        Write-Log "Parsed version: $V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"
+        if (("$NIGHTLY_BUILD" -ne "TRUE") -and ("$SOURCE_CONTROL_LABEL" -eq "")) {  # If not nightly build and SOURCE_CONTROL_LABEL is not set
             # TODO: String Substring - check parameters for $BUILD_YEAR  # Get the last 2 digits of current year
             # Radio Group: 
+            $versionDefaultIndex = ($VersionChoice -ge 0) ? $VersionChoice : 0
             $VAR_RESULT = Show-RadioMenu -Title "Set version for this build" -Options @(
                 "$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD (no version change)",  # index=0
                 "$V_MAJOR.$V_MINOR.$V_RELEASE.$T_BLD (standard build)",  # index=1
@@ -1404,7 +1984,7 @@ try {  #
                 "$V_MAJOR.$T_MIN.0.0 (minor build)",  # index=3
                 "$BUILD_YEAR.1.0.0 (major build)",  # index=4
                 "None of the above - cancel build process"  # index=5
-            )
+            ) -DefaultIndex $versionDefaultIndex
             if ("$VAR_RESULT" -ceq "5") {  # Cancel build
                 # [DISABLED] Stop Macro Execution
                 throw "Build cancelled by user"
@@ -1442,7 +2022,7 @@ try {  #
         $BUILD_VERSION = "$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"  # Set BUILD_VERSION as per selected build type
     }
     $BUILD_TITLE = "Script: DateTimeToStr(Now)"  # Set BUILD_TITLE
-    if (("$PROJECT_TITLE" -like "Advanced Inquiry*") -and ("$PROJECT_TITLE" -like "Archive Inquiry*")) {  # Building Advanced/Archive Inquiry
+    if (("$PROJECT_TITLE" -like "Advanced Inquiry*") -or ("$PROJECT_TITLE" -like "Archive Inquiry*")) {  # Building Advanced/Archive Inquiry
         $BUILD_TITLE = "Advanced/Archive Inquiry  $BUILD_VERSION - $BUILD_TITLE"  # Set BUILD_TITLE
         if ("$PROJECT_TITLE" -like "Advanced Inquiry*") {  # Set title only for the first project (Advanced Inquiry)
             $script:BuildTitle = "$BUILD_TITLE"  # Set build title
@@ -1462,13 +2042,23 @@ try {  #
 
         #region Check if any PASQL script has changed
         Write-Log "--- Check if any PASQL script has changed ---"
+		
+        $VAR_RESULT = 0
+		Write-Log "[DEBUG] Looking for setup PASQL files in: $BUILD_TEMP_PATH\scripts\"
+        foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\scripts\*setup.pasql" -ErrorAction SilentlyContinue)) {
+            Write-Log "[DEBUG] Found setup PASQL file: $($__file.FullName)"
+            $SETUP_PASQL_FILE_NAME = $__file.FullName
+            $VAR_RESULT++
+        }
+        Write-Log "[DEBUG] Total setup PASQL files found: $VAR_RESULT"
+		
         $VAR_RESULT = 0
         foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\scripts\*setup.pasql" -ErrorAction SilentlyContinue)) {  # Check for presence of *setup.pasql file
             $SETUP_PASQL_FILE_NAME = $__file.FullName
             $VAR_RESULT++
         }
-        if ("$VAR_RESULT" -ne "") {  # If more than 1 *setup.pasql found
-            throw "Only one *Setup.pasq file should exist. $VAR_RESULT found  BuildStudio script needs fixing :)"
+        if ([int]$VAR_RESULT -gt 1) {  # Check if more than 1 *setup.pasql found
+            throw "Only one *Setup.pasql file should exist. $VAR_RESULT found. BuildStudio script needs fixing :)"
         }
         if (("$PASQL_SCRIPTS_HAVE_CHANGED" -ne "TRUE") -and ("$VAR_RESULT" -ne "0")) {  # If not PASQL_SCRIPTS_HAVE_CHANGED yet set
             $SETUP_PASQL_DATE = (Get-Item "$SETUP_PASQL_FILE_NAME").LastWriteTime.ToString()  # Set SETUP_PASQL_DATE from setup.pasql file
@@ -1504,237 +2094,91 @@ try {  #
         }
         #endregion Check if any PASQL script has changed
 
-
         #region Check if the applications is 3 tier
         Write-Log "--- Check if the applications is 3 tier ---"
         if (Test-Path "$BUILD_TEMP_PATH\*server.ini") {  # 
             $IS_2_TIER = "FALSE"  # Set IS_2_TIER to FALSE
+			Write-Log "IS_2_TIER was set to $IS_2_TIER"
         }
         #endregion Check if the applications is 3 tier
 
 
         #region Update version numbers
-        Write-Log "--- Update version numbers ---"
-        if ("$SOURCE_CONTROL_LABEL" -ceq "") {  # If SOURCE_CONTROL_LABEL is not set
 
-            #region Update setup.pasql file if needed
-            Write-Log "--- Update setup.pasql file if needed ---"
-            if ("$PASQL_SCRIPTS_HAVE_CHANGED" -eq "TRUE") {  # If PASQL scripts have changed
-                if (Test-Path "$SETUP_PASQL_FILE_NAME") {  # If PASQL script exists
-                    Copy-FileEx -Source "$SETUP_PASQL_FILE_NAME" -Destination "$SETUP_PASQL_FILE_NAME.test" -Force  # Make a copy of SETUP_PASQL_FILE_NAME to use in PASQL tests
-                    $TEMP_VAR = Split-Path -Path "$SETUP_PASQL_FILE_NAME" -Leaf  # Set TEMP_VAR to the file part of SETUP_PASQL_FILE_NAME
-                    Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/scripts/$TEMP_VAR" -Host "$VAULT_SERVER_ADDRESS"  # 
-                    # Find/replace split into separate calls in case not all replacements are required
-                    Replace-InFile -Path "$SETUP_PASQL_FILE_NAME" -Find "^AppDBVersion.*= `"\d+\.\d+\.\d+\.\d+`"" -Replace "AppDBVersion         = `"$BUILD_VERSION`""  # Set AppDBVersion
-                    Replace-InFile -Path "$SETUP_PASQL_FILE_NAME" -Find "^AppMinServerVersion.*= `"\d+\.\d+\.\d+\.\d+`"" -Replace "AppMinServerVersion  = `"$BUILD_VERSION`""  # Set AppMinServerVersion
-                    if ("$IS_2_TIER" -ne "TRUE") {
-                        Replace-InFile -Path "$SETUP_PASQL_FILE_NAME" -Find "^AppMinClientVersion.*= `"\d+\.\d+\.\d+\.\d+`"" -Replace "AppMinClientVersion  = `"$BUILD_VERSION`""  # Set AppMinClientVersion
-                    }
+        Write-Log "--- Apply selected build version to source metadata ---"
+        $selectedBuildVersion = $BUILD_VERSION
+
+        try {
+            $projectVersionFiles = @()
+            if ("$DELPHI_VERSION" -ceq "6") {
+                $projectVersionFiles = @(Get-ChildItem -Path "$BUILD_TEMP_PATH\Source\*.dof" -File -ErrorAction SilentlyContinue)
+            } else {
+                $projectVersionFiles = @(Get-ChildItem -Path "$BUILD_TEMP_PATH\Source\*.dproj" -File -ErrorAction SilentlyContinue)
+            }
+
+            foreach ($projectVersionFile in $projectVersionFiles) {
+                Set-PADelphiProjectVersion -Path $projectVersionFile.FullName -Version $selectedBuildVersion
+            }
+
+            $versionFiles = @(Get-ChildItem -Path "$BUILD_TEMP_PATH\Source" -Filter "*Version.pas" -File -ErrorAction SilentlyContinue)
+            if ($versionFiles.Count -eq 0) {
+                $versionFiles = @(Get-ChildItem -Path "$BUILD_TEMP_PATH\Source" -Filter "AppVersion.pas" -File -ErrorAction SilentlyContinue)
+            }
+
+            foreach ($versionFile in $versionFiles) {
+                try {
+                    Set-PAVersionSourceFileVersion -Path $versionFile.FullName -Version $selectedBuildVersion
+                } catch {
+                    Write-Log "[ERROR] Failed to update version source file $($versionFile.FullName): $_"
+                    throw
                 }
             }
-            #endregion Update setup.pasql file if needed
 
-
-            #region Update project files
-            Write-Log "--- Update project files ---"
-            # Script block (DelphiScript): Build project icon name
-            $ICON_FILE_NAME = ($PROJECT_TITLE -replace '\s+', '') + ".ico"
-            if (Test-Path "$BUILD_TEMP_PATH\source\$ICON_FILE_NAME") {  # Check if source\ICON_FILE_NAME file exists
-            } else {
-                Invoke-VaultGetLatest -Repository "SDG" -Path "$/Framework/Icons/APAICON.ico" -LocalFolder "$BUILD_TEMP_PATH\source"  # Get APAICON.ico (for building RES files)
-                $ICON_FILE_NAME = "APAICON.ICO"  # Set ICON_FILE_NAME to APAICON.ICO
-            }
-            if ("$DELPHI_VERSION" -ceq "6") {  # Delphi 6
-                foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\source\*.dof" -ErrorAction SilentlyContinue)) {  # Loop through DOF project files, project name in VAR_RESULT_TEXT
-                    $VAR_RESULT_TEXT = $__file.FullName
-                    $TEMP_VAR = Split-Path -Path "$VAR_RESULT_TEXT" -Leaf  # Set TEMP_VAR to the file part of file
-                    Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/source/$TEMP_VAR" -Host "$VAULT_SERVER_ADDRESS"  # 
-                    Set-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info" -Key "MajorVer" -Value "$V_MAJOR"  # Set MajorVer
-                    Set-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info" -Key "MinorVer" -Value "$V_MINOR"  # Set MinorVer
-                    Set-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info" -Key "Release" -Value "$V_RELEASE"  # Set Release
-                    Set-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info" -Key "Build" -Value "$V_BUILD"  # Set Build
-                    Set-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info Keys" -Key "FileVersion" -Value "$BUILD_VERSION"  # Set FileVersion
-                    Set-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info Keys" -Key "ProductVersion" -Value "$RELEASE_VERSION"  # Set ProductVersion
-                    Set-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info Keys" -Key "LegalCopyright" -Value "Copyright © 1991 - $CURRENT_YEAR"  # Set LegalCopyright
-                    $FILE_DESCRIPTION = Get-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info Keys" -Key "FileDescription"  # Set FILE_DESCRIPTION
-                    $INTERNAL_NAME = Get-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info Keys" -Key "InternalName"  # Set INTERNAL_NAME
-                    $PRODUCT_NAME = Get-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info Keys" -Key "ProductName"  # Set PRODUCT_NAME
-                    $VAR_RESULT_TEXT = [System.IO.Path]::ChangeExtension("$VAR_RESULT_TEXT", '.res')  # Change file name, replace DOF extension with RES
-                    if (Test-Path "$VAR_RESULT_TEXT") {  # If a RES file for this project exists
-                        $TEMP_VAR = Split-Path -Path "$VAR_RESULT_TEXT" -Leaf  # Set TEMP_VAR to the file part of file
-                        Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/source/$TEMP_VAR" -Host "$VAULT_SERVER_ADDRESS"  # 
-                        $VAR_RESULT_TEXT = [System.IO.Path]::ChangeExtension("$VAR_RESULT_TEXT", '.rc')  # Change file name, replace DOF extension with RC
-                        Set-Content -Path "$VAR_RESULT_TEXT" -Value "MAINICON ICON `"$ICON_FILE_NAME`" APAICON ICON `"$ICON_FILE_NAME`"  1 VERSIONINFO  FILEVERSION $V_MAJOR,$V_MINOR,$V_RELEASE,$V_BUILD  PRODUCTVERSION $V_MAJOR,$V_MINOR,$V_RELEASE  FILEFLAGSMASK 0x3fL  FILEFLAGS 0x0L  FILEOS 0x4L  FILETYPE 0x1L  FILESUBTYPE 0x0L BEGIN     BLOCK `"StringFileInfo`"     BEGIN         BLOCK `"0c0904e4`"         BEGIN             VALUE `"CompanyName`", `"Professional Advantage Pty. Ltd.`"             VALUE `"FileDescription`", `"$FILE_DESCRIPTION`"             VALUE `"FileVersion`", `"$BUILD_VERSION`"             VALUE `"LegalCopyright`", `"©1991 - $CURRENT_YEAR`"             VALUE `"InternalName`", `"$INTERNAL_NAME`"             VALUE `"ProductName`", `"$PRODUCT_NAME`"             VALUE `"ProductVersion`", `"$RELEASE_VERSION`"         END     END     BLOCK `"VarFileInfo`"     BEGIN         VALUE `"Translation`", 0xc09, 1252     END END"  # Create RC file
-                        Invoke-DosCommand -Command "`"C:\Program Files\Microsoft SDKs\Windows\v7.0A\bin\rc.exe`" /v /r /l0c09 /c1252 `"$VAR_RESULT_TEXT`"" -WorkingDirectory "$BUILD_TEMP_PATH\source"  # Build the RES file
+            $BUILD_VERSION = $selectedBuildVersion
+            Write-Log "[DEBUG] Final BUILD_VERSION kept from selected build option: $BUILD_VERSION"
+    
+            # === Update setup.pasql file if needed ===
+            Write-Log "[DEBUG] --- Checking for setup PASQL files ---"
+    
+            $setupPasqlFiles = @(Get-ChildItem -Path "$BUILD_TEMP_PATH\Scripts" -Filter "*Setup.pasql" -ErrorAction SilentlyContinue)
+    
+            if ($setupPasqlFiles.Count -gt 0) {
+                Write-Log "[DEBUG] Found $($setupPasqlFiles.Count) setup PASQL file(s)"
+        
+                foreach ($pasqlFile in $setupPasqlFiles) {
+                    Write-Log "[DEBUG] Processing PASQL file: $($pasqlFile.FullName)"
+            
+                    try {
+                        Set-PASetupPasqlVersion -Path $pasqlFile.FullName -Version $BUILD_VERSION
+                
+                    } catch {
+                        Write-Log "[ERROR] Failed to update PASQL file $($pasqlFile.FullName): $_"
+                        throw
                     }
                 }
             } else {
-                foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\source\*.dproj" -ErrorAction SilentlyContinue)) {  # Loop through DPROJ project files, project name in VAR_RESULT_TEXT
-                    $VAR_RESULT_TEXT = $__file.FullName
-                    $TEMP_VAR = Split-Path -Path "$VAR_RESULT_TEXT" -Leaf  # Set TEMP_VAR to the file part of file
-                    Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/source/$TEMP_VAR" -Host "$VAULT_SERVER_ADDRESS"  # 
-                    if ("$DELPHI_VERSION" -ceq "10.4") {  # Delphi 10.4
-                        # If XML Node/Attribute Exists: //*[local-name()='VerInfo_MajorVer']
-                        $FIND_RESULT = 'False'
-                        try {
-                            [xml]$_xml = Get-Content -Path "$VAR_RESULT_TEXT" -Raw
-                            $_nsMgr = [System.Xml.XmlNamespaceManager]::new($_xml.NameTable)
-                            $_node = $_xml.SelectSingleNode("//*[local-name()='VerInfo_MajorVer']", $_nsMgr)
-                            if ($_node) { $FIND_RESULT = 'True' }
-                        } catch { Write-Log "XML query failed: $_" }
-                        if ($FIND_RESULT -ceq 'True') {
-                            Set-XmlValue -Path "" -XPath "//*[local-name()='VerInfo_MajorVer']" -Value "$V_MAJOR"  # Set MajorVer
-                        } else {
-                            Set-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"MajorVer`"]" -Value "$V_MAJOR"  # Set MajorVer
-                        }
-                        # If XML Node/Attribute Exists: //*[local-name()='VerInfo_MinorVer']
-                        $FIND_RESULT = 'False'
-                        try {
-                            [xml]$_xml = Get-Content -Path "$VAR_RESULT_TEXT" -Raw
-                            $_nsMgr = [System.Xml.XmlNamespaceManager]::new($_xml.NameTable)
-                            $_node = $_xml.SelectSingleNode("//*[local-name()='VerInfo_MinorVer'] ", $_nsMgr)
-                            if ($_node) { $FIND_RESULT = 'True' }
-                        } catch { Write-Log "XML query failed: $_" }
-                        if ($FIND_RESULT -ceq 'True') {
-                            Set-XmlValue -Path "" -XPath "//*[local-name()='VerInfo_MinorVer']" -Value "$V_MINOR"  # Set MinorVer
-                        } else {
-                            Set-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"MinorVer`"]" -Value "$V_MINOR"  # Set MinorVer
-                        }
-                        # If XML Node/Attribute Exists: //*[local-name()='VerInfo_Release']
-                        $FIND_RESULT = 'False'
-                        try {
-                            [xml]$_xml = Get-Content -Path "$VAR_RESULT_TEXT" -Raw
-                            $_nsMgr = [System.Xml.XmlNamespaceManager]::new($_xml.NameTable)
-                            $_node = $_xml.SelectSingleNode("//*[local-name()='VerInfo_Release']", $_nsMgr)
-                            if ($_node) { $FIND_RESULT = 'True' }
-                        } catch { Write-Log "XML query failed: $_" }
-                        if ($FIND_RESULT -ceq 'True') {
-                            Set-XmlValue -Path "" -XPath "//*[local-name()='VerInfo_Release']" -Value "$V_RELEASE"  # Set Release
-                        } else {
-                            Set-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"Release`"]" -Value "$V_RELEASE"  # Set Release
-                        }
-                        # If XML Node/Attribute Exists: //*[local-name()='VerInfo_Build']
-                        $FIND_RESULT = 'False'
-                        try {
-                            [xml]$_xml = Get-Content -Path "$VAR_RESULT_TEXT" -Raw
-                            $_nsMgr = [System.Xml.XmlNamespaceManager]::new($_xml.NameTable)
-                            $_node = $_xml.SelectSingleNode("//*[local-name()='VerInfo_Build'] ", $_nsMgr)
-                            if ($_node) { $FIND_RESULT = 'True' }
-                        } catch { Write-Log "XML query failed: $_" }
-                        if ($FIND_RESULT -ceq 'True') {
-                            Set-XmlValue -Path "" -XPath "//*[local-name()='VerInfo_Build']" -Value "$V_BUILD"  # Set Build
-                        } else {
-                            Set-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"Build`"]" -Value "$V_BUILD"  # Set Build
-                        }
-                    } else {
-                        Set-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"MajorVer`"]" -Value "$V_MAJOR"  # Set MajorVer
-                        Set-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"MinorVer`"]" -Value "$V_MINOR"  # Set MinorVer
-                        Set-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"Release`"]" -Value "$V_RELEASE"  # Set Release
-                        Set-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"Build`"]" -Value "$V_BUILD"  # Set Build
-                        Set-XmlValue -Path "" -XPath "//*[local-name()='VersionInfoKeys'][@Name=`"FileVersion`"]" -Value "$BUILD_VERSION"  # Set FileVersion
-                        Set-XmlValue -Path "" -XPath "//*[local-name()='VersionInfoKeys'][@Name=`"ProductVersion`"]" -Value "$RELEASE_VERSION"  # Set ProductVersion
-                        Set-XmlValue -Path "" -XPath "//*[local-name()='VersionInfoKeys'][@Name=`"LegalCopyright`"]" -Value "©1991 - $CURRENT_YEAR"  # Set LegalCopyright
-                    }
-                    # [DISABLED] Find/Replace in File (Set version numbers, copyright etc) - Set version numbers, copyright etc
-                    # [DISABLED] Find/Replace in File (Remove damaged EurekaLog section) - Remove damaged EurekaLog section
-                    # [DISABLED] Write to File (Append EUREKA_LOG_CONFIG_SECTION) - Append EUREKA_LOG_CONFIG_SECTION
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfoKeys'][@Name=`"FileDescription`"]"  # Set FILE_DESCRIPTION
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfoKeys'][@Name=`"InternalName`"]"  # Set INTERNAL_NAME
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfoKeys'][@Name=`"ProductName`"]"  # Set PRODUCT_NAME
-                    if ((("$DELPHI_VERSION" -eq "XE2") -and ("$DELPHI_VERSION" -eq "XE6")) -and ("$DELPHI_VERSION" -eq "10.4")) {  # Delphi XE2, XE6, 10.4
-                        if (("$VAR_RESULT_TEXT" -notlike "*ISAPI*") -and ("$VAR_RESULT_TEXT" -notlike "*REPORTQUERYBUILDER*")) {  # If project is not a  dll
-                            # If XML Node/Attribute Exists: 
-                            $NOT_A_DLL = 'False'
-                            try {
-                                [xml]$_xml = Get-Content -Path "$VAR_RESULT_TEXT" -Raw
-                                $_nsMgr = [System.Xml.XmlNamespaceManager]::new($_xml.NameTable)
-                                $_node = $_xml.SelectSingleNode("//*[local-name()='Icon_MainIcon']", $_nsMgr)
-                                if ($_node) { $NOT_A_DLL = 'True' }
-                            } catch { Write-Log "XML query failed: $_" }
-                            if ($NOT_A_DLL -ceq 'True') {
-                                Set-XmlValue -Path "" -XPath "//*[local-name()='Icon_MainIcon']" -Value "$ICON_FILE_NAME"  # Set Icon
-                            }
-                        }
-                        Set-XmlValue -Path "" -XPath "//*[local-name()='VerInfo_Keys']" -Value "CompanyName=Professional Advantage Pty. Ltd.;FileDescription=$FILE_DESCRIPTION;FileVersion=$BUILD_VERSION;InternalName=$INTERNAL_NAME;LegalCopyright=©1991 - $CURRENT_YEAR;LegalTrademarks=;OriginalFilename=;ProductName=$PRODUCT_NAME;ProductVersion=$RELEASE_VERSION;Comments="  # Set Version info keys
-                    }
-                    $VAR_RESULT_TEXT = [System.IO.Path]::ChangeExtension("$VAR_RESULT_TEXT", '.res')  # Change file name, replace DPROJ extension with RES
-                    if (Test-Path "$VAR_RESULT_TEXT") {  # If a RES file for this project exists
-                        $TEMP_VAR = Split-Path -Path "$VAR_RESULT_TEXT" -Leaf  # Set TEMP_VAR to the file part of file
-                        Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/source/$TEMP_VAR" -Host "$VAULT_SERVER_ADDRESS"  # 
-                        $VAR_RESULT_TEXT = [System.IO.Path]::ChangeExtension("$VAR_RESULT_TEXT", '.rc')  # Change file name, replace DPROJ extension with RC
-                        if (("$DELPHI_VERSION" -eq "XE2") -and ("$DELPHI_VERSION" -eq "XE6")) {  # XE2
-                            Set-Content -Path "$VAR_RESULT_TEXT" -Value "MAINICON ICON `"$ICON_FILE_NAME`"  1 VERSIONINFO  FILEVERSION $V_MAJOR,$V_MINOR,$V_RELEASE,$V_BUILD  PRODUCTVERSION $V_MAJOR,$V_MINOR,$V_RELEASE  FILEFLAGSMASK 0x3fL  FILEFLAGS 0x0L  FILEOS 0x4L  FILETYPE 0x1L  FILESUBTYPE 0x0L BEGIN     BLOCK `"StringFileInfo`"     BEGIN         BLOCK `"0c0904e4`"         BEGIN             VALUE `"CompanyName`", `"Professional Advantage Pty. Ltd.`"             VALUE `"FileDescription`", `"$FILE_DESCRIPTION`"             VALUE `"FileVersion`", `"$BUILD_VERSION`"             VALUE `"LegalCopyright`", `"©1991 - $CURRENT_YEAR`"             VALUE `"InternalName`", `"$INTERNAL_NAME`"             VALUE `"ProductName`", `"$PRODUCT_NAME`"             VALUE `"ProductVersion`", `"$RELEASE_VERSION`"         END     END     BLOCK `"VarFileInfo`"     BEGIN         VALUE `"Translation`", 0xc09, 1252     END END"  # Create RC file
-                        } else {
-                            Set-Content -Path "$VAR_RESULT_TEXT" -Value "MAINICON ICON `"$ICON_FILE_NAME`"  1 VERSIONINFO  FILEVERSION $V_MAJOR,$V_MINOR,$V_RELEASE,$V_BUILD  PRODUCTVERSION $V_MAJOR,$V_MINOR,$V_RELEASE  FILEFLAGSMASK 0x3fL  FILEFLAGS 0x0L  FILEOS 0x4L  FILETYPE 0x1L  FILESUBTYPE 0x0L BEGIN     BLOCK `"StringFileInfo`"     BEGIN         BLOCK `"0c0904e4`"         BEGIN             VALUE `"CompanyName`", `"Professional Advantage Pty. Ltd.`"             VALUE `"FileDescription`", `"$FILE_DESCRIPTION`"             VALUE `"FileVersion`", `"$BUILD_VERSION`"             VALUE `"LegalCopyright`", `"©1991 - $CURRENT_YEAR`"             VALUE `"InternalName`", `"$INTERNAL_NAME`"             VALUE `"ProductName`", `"$PRODUCT_NAME`"             VALUE `"ProductVersion`", `"$RELEASE_VERSION`"         END     END     BLOCK `"VarFileInfo`"     BEGIN         VALUE `"Translation`", 0xc09, 1252     END END"  # Create RC file
-                        }
-                        Invoke-DosCommand -Command "`"C:\Program Files (x86)\Windows Kits\8.1\bin\x64\rc.exe`" /v /r /l0c09 /c1252 `"$VAR_RESULT_TEXT`"" -WorkingDirectory "$BUILD_TEMP_PATH\source"  # Build the RES file
-                    }
-                }
+                Write-Log "[DEBUG] No setup PASQL files found in $BUILD_TEMP_PATH\Scripts"
             }
-            #endregion Update project files
-
-
-            #region Update shared versions file
-            Write-Log "--- Update shared versions file ---"
-            if ("$DELPHI_VERSION" -ceq "6") {  # If Delphi 6
-                if ("$IS_2_TIER" -ne "TRUE") {  # 3 tier
-                    if (Test-Path "$BUILD_TEMP_PATH\source\shared\Version.pas") {  # If source\shared\Version.pas file exists
-                        Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/source/shared//Version.pas" -Host "$VAULT_SERVER_ADDRESS"  # 
-                        # Find/replace split into separate calls in case not all replacements are required
-                        Replace-InFile -Path "$BUILD_TEMP_PATH\source\shared\Version.pas" -Find "MIN_SERVER_VERSION .*= '\d+\.\d+\.\d+\.\d+';" -Replace "MIN_SERVER_VERSION          = '$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD';"  # Set MIN_SERVER_VERSION
-                        Replace-InFile -Path "$BUILD_TEMP_PATH\source\shared\Version.pas" -Find "MIN_CLIENT_VERSION .*= '\d+\.\d+\.\d+\.\d+';" -Replace "MIN_CLIENT_VERSION          = '$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD';"  # Set MIN_CLIENT_VERSION
-                        if ("$PASQL_SCRIPTS_HAVE_CHANGED" -eq "TRUE") {  # If PASQL scripts have changed
-                            Replace-InFile -Path "$BUILD_TEMP_PATH\source\shared\Version.pas" -Find "MIN_DATABASE_VERSION .*= '\d+\.\d+\.\d+\.\d+';" -Replace "MIN_DATABASE_VERSION        = '$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD';"  # Set MIN_DATABASE_VERSION
-                        }
-                    }
-                    if (Test-Path "$BUILD_TEMP_PATH\source\shared\Application\Version.pas") {  # If source\shared\Application\Version.pas file exists
-                        Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/source/shared/application/Version.pas" -Host "$VAULT_SERVER_ADDRESS"  # 
-                        # Find/replace split into separate calls in case not all replacements are required
-                        Replace-InFile -Path "$BUILD_TEMP_PATH\source\shared\Application\Version.pas" -Find "MIN_SERVER_VERSION .*= '\d+\.\d+\.\d+\.\d+';" -Replace "MIN_SERVER_VERSION          = '$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD';"  # Set MIN_SERVER_VERSION
-                        Replace-InFile -Path "$BUILD_TEMP_PATH\source\shared\Application\Version.pas" -Find "MIN_CLIENT_VERSION .*= '\d+\.\d+\.\d+\.\d+';" -Replace "MIN_CLIENT_VERSION          = '$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD';"  # Set MIN_CLIENT_VERSION
-                        if ("$PASQL_SCRIPTS_HAVE_CHANGED" -eq "TRUE") {  # If PASQL scripts have changed
-                            Replace-InFile -Path "$BUILD_TEMP_PATH\source\shared\Application\Version.pas" -Find "MIN_DATABASE_VERSION .*= '\d+\.\d+\.\d+\.\d+';" -Replace "MIN_DATABASE_VERSION        = '$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD';"  # Set MIN_DATABASE_VERSION
-                        }
-                    }
-                }
-            } else {
-                if ("$IS_2_TIER" -eq "TRUE") {  # 2 tier
-                    if (Test-Path "$BUILD_TEMP_PATH\source\application\AppVersionConsts.pas") {  # If source\application\AppVersionConsts.pas file exists
-                        Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/source/application/AppVersionConsts.pas" -Host "$VAULT_SERVER_ADDRESS"  # 
-                        if ("$PASQL_SCRIPTS_HAVE_CHANGED" -eq "TRUE") {  # If PASQL scripts have changed
-                            Replace-InFile -Path "$BUILD_TEMP_PATH\source\application\AppVersionConsts.pas" -Find "MIN_DATABASE_VERSION .*= '\d+\.\d+\.\d+\.\d+';" -Replace "MIN_DATABASE_VERSION        = '$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD';"  # Set MIN_DATABASE_VERSION
-                        }
-                    }
-                } else {
-                    if (Test-Path "$BUILD_TEMP_PATH\source\shared\application\AppVersionConsts.pas") {  # If source\shared\application\AppVersionConsts.pas file exists
-                        Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/source/shared/application/AppVersionConsts.pas" -Host "$VAULT_SERVER_ADDRESS"  # 
-                        # Find/replace split into separate calls in case not all replacements are required
-                        Replace-InFile -Path "$BUILD_TEMP_PATH\source\shared\application\AppVersionConsts.pas" -Find "MIN_SERVER_VERSION *= '\d+\.\d+\.\d+\.\d+';" -Replace "MIN_SERVER_VERSION          = '$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD';"  # Set MIN_SERVER_VERSION
-                        Replace-InFile -Path "$BUILD_TEMP_PATH\source\shared\application\AppVersionConsts.pas" -Find "MIN_SERVER_VERSION_FOR_AUTO *= '\d+\.\d+\.\d+\.\d+';" -Replace "MIN_SERVER_VERSION_FOR_AUTO = '$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD';"  # Set MIN_SERVER_VERSION_FOR_AUTO (Pillar SunSystems Interface)
-                        Replace-InFile -Path "$BUILD_TEMP_PATH\source\shared\application\AppVersionConsts.pas" -Find "MIN_CLIENT_VERSION .*= '\d+\.\d+\.\d+\.\d+';" -Replace "MIN_CLIENT_VERSION          = '$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD';"  # Set MIN_CLIENT_VERSION
-                        if ("$PASQL_SCRIPTS_HAVE_CHANGED" -eq "TRUE") {  # If PASQL scripts have changed
-                            Replace-InFile -Path "$BUILD_TEMP_PATH\source\shared\application\AppVersionConsts.pas" -Find "MIN_DATABASE_VERSION .*= '\d+\.\d+\.\d+\.\d+';" -Replace "MIN_DATABASE_VERSION        = '$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD';"  # Set MIN_DATABASE_VERSION
-                        }
-                    }
-                }
-            }
-            #endregion Update shared versions file
-
-
-            #region Update BuildSetupConsts.vbs if needed (TODO: this file is not used by Build Studio!)
-            Write-Log "--- Update BuildSetupConsts.vbs if needed (TODO: this file is not used by Build Studio!) ---"
-            if (Test-Path "$BUILD_TEMP_PATH\setup\BuildSetupConsts.vbs") {  # If BuildSetupConsts.vbs file exists
-                Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/setup/BuildSetupConsts.vbs" -Host "$VAULT_SERVER_ADDRESS"  # 
-                # Find/replace split into separate calls in case not all replacements are required
-                Replace-InFile -Path "$BUILD_TEMP_PATH\setup\BuildSetupConsts.vbs" -Find "DistributeTo.*= `".*`"$" -Replace "DistributeTo = `"\\\\$VAULT_SERVER_ADDRESS\\ForQA\\$PROJECT_TITLE\\$RELEASE_VERSION`""  # Set DistributeTo
-                if ("$PROJECT_TITLE" -like "Contract and Service Billing*") {  # CSB quirk - release folder does not match project title (PROJECT_TITLE)
-                    Replace-InFile -Path "$BUILD_TEMP_PATH\setup\BuildSetupConsts.vbs" -Find "DistributeTo.*= `".*`"$" -Replace "DistributeTo = `"\\\\$VAULT_SERVER_ADDRESS\\ForQA\\CSB\\$RELEASE_VERSION`""  # Set DistributeTo
-                }
-            }
-            #endregion Update BuildSetupConsts.vbs if needed (TODO: this file is not used by Build Studio!)
-
+    
+            Write-Log "[DEBUG] --- Update version numbers section completed ---"
+    
+        } catch {
+            Write-Log "[ERROR] Unexpected error in 'Update version numbers' region: $_"
+            Write-Log "[ERROR] Stack trace: $($_.ScriptStackTrace)"
+            throw
         }
+
         #endregion Update version numbers
+
+        Write-Log "[DEBUG] Looking for About dialog file in: $BUILD_TEMP_PATH\Source"
+        Write-Log "[DEBUG] CURRENT_YEAR = '$CURRENT_YEAR'"
+
+        $AboutDialogFile = Get-ChildItem -Path "$BUILD_TEMP_PATH\Source\*About*.pas" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($AboutDialogFile) {
+            Write-Log "[DEBUG] Found About file: $($AboutDialogFile.FullName)"
+        } else {
+            Write-Log "[DEBUG] ERROR: No About dialog file found!"
+        }
 
         if ("$SOURCE_CONTROL_LABEL" -ceq "") {  # If SOURCE_CONTROL_LABEL is not set
 
@@ -1743,37 +2187,44 @@ try {  #
             if ("$DELPHI_VERSION" -ceq "6") {  # Delphi 6
                 if ("$IS_2_TIER" -eq "TRUE") {  # 2 tier
                     if (Test-Path "$BUILD_TEMP_PATH\Source\pa shared\paAboutDialog.pas") {  # If source\pa shared\paAboutDialog.pas file exists
-                        $VAR_RESULT = Find-InFile -Path "$BUILD_TEMP_PATH\Source\PA Shared\paAboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'$CURRENT_YEAR';"  # Set PA_COPYRIGHT_YEAR
-                        if ("$VAR_RESULT" -le "1") {  # Only modify this file if the current year does not match
+                        $VAR_RESULT = Find-InFile -Path "$BUILD_TEMP_PATH\Source\PA Shared\paAboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'$CURRENT_YEAR';" -UseRegex  # Set PA_COPYRIGHT_YEAR
+                        if ("$VAR_RESULT" -ne "1") {  # Only modify this file if the current year does not match
                             Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/source/pa shared/paAboutDialog.pas" -Host "$VAULT_SERVER_ADDRESS"  # 
-                            Replace-InFile -Path "$BUILD_TEMP_PATH\Source\PA Shared\paAboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'\d\d\d\d';" -Replace "PA_COPYRIGHT_YEAR = '$CURRENT_YEAR';"  # Set PA_COPYRIGHT_YEAR
+                            Replace-InFile -Path "$BUILD_TEMP_PATH\Source\PA Shared\paAboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'\d\d\d\d';" -Replace "PA_COPYRIGHT_YEAR = '$CURRENT_YEAR';" -UseRegex  # Set PA_COPYRIGHT_YEAR
                         }
                     }
                 } else {  # 3 tier
                     if (Test-Path "$BUILD_TEMP_PATH\Source\Client\pa shared\paAboutDialog.pas") {  # If source\Client\pa shared\paAboutDialog.pas file exists
-                        $VAR_RESULT = Find-InFile -Path "$BUILD_TEMP_PATH\Source\Client\PA Shared\paAboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'$CURRENT_YEAR';"  # Set PA_COPYRIGHT_YEAR
-                        if ("$VAR_RESULT" -le "1") {  # Only modify this file if the current year does not match
+                        $VAR_RESULT = Find-InFile -Path "$BUILD_TEMP_PATH\Source\Client\PA Shared\paAboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'$CURRENT_YEAR';" -UseRegex  # Set PA_COPYRIGHT_YEAR
+                        if ("$VAR_RESULT" -ne "1") {  # Only modify this file if the current year does not match
                             Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/source/client/pa shared/paAboutDialog.pas" -Host "$VAULT_SERVER_ADDRESS"  # 
-                            Replace-InFile -Path "$BUILD_TEMP_PATH\Source\Client\PA Shared\paAboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'\d\d\d\d';" -Replace "PA_COPYRIGHT_YEAR = '$CURRENT_YEAR';"  # Set PA_COPYRIGHT_YEAR
+                            Replace-InFile -Path "$BUILD_TEMP_PATH\Source\Client\PA Shared\paAboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'\d\d\d\d';" -Replace "PA_COPYRIGHT_YEAR = '$CURRENT_YEAR';" -UseRegex  # Set PA_COPYRIGHT_YEAR
                         }
                     }
                 }
             } else {
                 if ("$IS_2_TIER" -eq "TRUE") {  # 2 tier
                     if (Test-Path "$BUILD_TEMP_PATH\Source\Framework\AboutDialog.pas") {  # If source\Framework\AboutDialog.pas file exists
-                        $VAR_RESULT = Find-InFile -Path "$BUILD_TEMP_PATH\Source\Framework\AboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'$CURRENT_YEAR';"  # Set PA_COPYRIGHT_YEAR
-                        if ("$VAR_RESULT" -le "1") {  # Only modify this file if the current year does not match
+                        $VAR_RESULT = Find-InFile -Path "$BUILD_TEMP_PATH\Source\Framework\AboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'$CURRENT_YEAR';" -UseRegex  # Set PA_COPYRIGHT_YEAR
+                        if ("$VAR_RESULT" -ne "1") {  # Only modify this file if the current year does not match
                             Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/source/framework/AboutDialog.pas" -Host "$VAULT_SERVER_ADDRESS"  # 
-                            Replace-InFile -Path "$BUILD_TEMP_PATH\Source\Framework\AboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'\d\d\d\d';" -Replace "PA_COPYRIGHT_YEAR = '$CURRENT_YEAR';"  # Set PA_COPYRIGHT_YEAR
+                            Replace-InFile -Path "$BUILD_TEMP_PATH\Source\Framework\AboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'\d\d\d\d';" -Replace "PA_COPYRIGHT_YEAR = '$CURRENT_YEAR';" -UseRegex  # Set PA_COPYRIGHT_YEAR
                         }
                     }
                 } else {  # 3 tier
+					Write-Log "[DEBUG] About to look for AboutDialog.pas in $BUILD_TEMP_PATH\Source\Client\Framework"
                     if (Test-Path "$BUILD_TEMP_PATH\Source\Client\Framework\AboutDialog.pas") {  # If source\Client\Framework\AboutDialog.pas file exists
-                        $VAR_RESULT = Find-InFile -Path "$BUILD_TEMP_PATH\Source\Client\Framework\AboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'$CURRENT_YEAR';"  # Set PA_COPYRIGHT_YEAR
-                        if ("$VAR_RESULT" -le "1") {  # Only modify this file if the current year does not match
-                            Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/source/client/framework/AboutDialog.pas" -Host "$VAULT_SERVER_ADDRESS"  # 
-                            Replace-InFile -Path "$BUILD_TEMP_PATH\Source\Client\Framework\AboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'\d\d\d\d';" -Replace "PA_COPYRIGHT_YEAR = '$CURRENT_YEAR';"  # Set PA_COPYRIGHT_YEAR
-                        }
+					    Write-Log "[DEBUG] Located AboutDialog.pas in $BUILD_TEMP_PATH\Source\Client\Framework"
+                        $VAR_RESULT = Find-InFile -Path "$BUILD_TEMP_PATH\Source\Client\Framework\AboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'$CURRENT_YEAR';" -UseRegex  # Set PA_COPYRIGHT_YEAR
+                        if ("$VAR_RESULT" -ne "1") {  # Only modify this file if the current year does not match
+							Write-Log "[DEBUG] Found PA_COPYRIGHT_YEAR in $BUILD_TEMP_PATH\Source\Client\Framework"
+                            Invoke-VaultCheckOut -Repository "SDG" -Path "$SOURCE_CONTROL_SOURCE_PATH/Source/Client/Framework/AboutDialog.pas" -Host "$VAULT_SERVER_ADDRESS"  # 
+                            Write-Log "[DEBUG] Just did vault check out to update copyright year"
+#                            Replace-InFile -Path "$BUILD_TEMP_PATH\Source\Client\Framework\AboutDialog.pas" -Find "PA_COPYRIGHT_YEAR.*= *'\d\d\d\d';" -Replace "PA_COPYRIGHT_YEAR = '$CURRENT_YEAR';"  # Set PA_COPYRIGHT_YEAR
+							Replace-InFile -Path "$BUILD_TEMP_PATH\Source\Client\Framework\AboutDialog.pas" -Find "PA_COPYRIGHT_YEAR = '\d\d\d\d';" -Replace "PA_COPYRIGHT_YEAR = '$CURRENT_YEAR';" -UseRegex
+							Write-Log "[DEBUG] Just attempted replace in file to update copyright year"
+ 
+                       }
                     }
                 }
             }
@@ -1845,7 +2296,8 @@ try {  #
                     throw "Unable to locate $PA_UNIT_FILE_NAME"
                 }
                 $REMOVE_UT_PASQ_FILE_NAME = "$BUILD_TEMP_PATH\scripts\remove_ut.remove"  # Set REMOVE_UT_PASQ_FILE_NAME
-                Set-Content -Path "$REMOVE_UT_PASQ_FILE_NAME" -Value "script `"UT_REMOVE`", `"$Revision`: 1 $`", `"UT REMOVE`"    usedatabase(`"all`")    if exists(`"table`", `"PA_UT_REGISTERED_TESTS`") then     batch `"Truncate PA_UT_REGISTERED_TESTS table`"       sql `"         truncate table PA_UT_REGISTERED_TESTS       `"     end batch   end if  end script "  # Create REMOVE_UT_PASQ_FILE_NAME file
+                $REMOVE_UT_PASQ_CONTENT = 'script "UT_REMOVE", "$Revision: 1 $", "UT REMOVE"    usedatabase("all")    if exists("table", "PA_UT_REGISTERED_TESTS") then     batch "Truncate PA_UT_REGISTERED_TESTS table"       sql "         truncate table PA_UT_REGISTERED_TESTS       "     end batch   end if  end script '
+                Set-Content -Path "$REMOVE_UT_PASQ_FILE_NAME" -Value $REMOVE_UT_PASQ_CONTENT  # Create REMOVE_UT_PASQ_FILE_NAME file
                 $REMOVE_UT_PASQ_FILE_NAME = "<ROW DISPLAY_NAME=`"Remove UT`" SETUP_SCRIPT=`"$REMOVE_UT_PASQ_FILE_NAME`" RUN_ORDER=`"0`" SELECTED=`"Y`"/>"  # Set REMOVE_UT_PASQ_FILE_NAME to XML format
                 $REMOVE_UT_PASQ_FILE_NAME = $REMOVE_UT_PASQ_FILE_NAME.Replace('\', '&#092;')  # Replace \ in REMOVE_UT_PASQ_FILE_NAME
                 $SETUP_PASQL_FILE_NAME = "<ROW DISPLAY_NAME=`"Setup`" SETUP_SCRIPT=`"$SETUP_PASQL_FILE_NAME`" RUN_ORDER=`"1`" SELECTED=`"Y`"/>"  # Set SETUP_PASQL_FILE_NAME to XML format
@@ -1911,9 +2363,13 @@ try {  #
             }
         }
     }
+    $LABEL = "Build $BUILD_VERSION"
     Invoke-VaultCheckIn -Repository "SDG" -Path "$BUILD_TEMP_PATH\scripts/*" -Comment "$LABEL"  # Check in PASQL scripts
     # [DISABLED] Run Submacro (Get shared scripts from DevOps) - Get shared scripts from DevOps
-    Invoke-get_files_from_devops   # Get shared scripts from GitHub
+    Invoke-get_files_from_devops -Repository 'https://github.com/Professional-Advantage-SDG/PasqlScripts.git' -Output "C:\Temp\$PROJECT_TITLE" -PASQLFolder "$BUILD_TEMP_PATH\scripts" -ProjectRoot "$BUILD_TEMP_PATH"   # Get shared scripts from GitHub
+    foreach ($setupPasqlFile in (Get-ChildItem -Path "$BUILD_TEMP_PATH\scripts\*setup.pasql" -File -ErrorAction SilentlyContinue)) {
+        Set-PASetupPasqlVersion -Path $setupPasqlFile.FullName -Version $BUILD_VERSION
+    }
     #endregion Run PASQL scripts/tests (if any)
 
 
@@ -1937,6 +2393,8 @@ try {  #
             Invoke-BuildProject   # Build project
         }
     }
+    Assert-PABuiltExecutableVersions -RootPath "$BUILD_TEMP_PATH" -ExpectedVersion "$BUILD_VERSION" -ExpectedCopyrightYear "$CURRENT_YEAR"
+    New-Item -ItemType Directory -Path "$BUILD_TEMP_PATH\standard_files" -Force | Out-Null
     Copy-FileEx -Source "$BUILD_TEMP_PATH\*.exe" -Destination "$BUILD_TEMP_PATH\standard_files" -Force  # Make backup of standard executables
     #endregion Build projects
 
@@ -1984,9 +2442,13 @@ try {  #
                 #endregion TODO: finish this (still need to check for test failures)
 
                 if ("$VAR_RESULT" -ne "0") {  # Check for errors
-                    throw "Failed to run test:  $VAR_RESULT_TEXT  $EXCEPTION_MESSAGE"
+                    if ($VAR_RESULT_TEXT -match '(?im)^\s*OK:\s+\d+\s+tests\b' -and -not (Test-PATestLogFailure -LogText $VAR_RESULT_TEXT)) {
+                        Write-Log "Test $TEMP_VAR returned exit code $VAR_RESULT but reported success"
+                    } else {
+                        throw "Failed to run test:  $VAR_RESULT_TEXT  $EXCEPTION_MESSAGE"
+                    }
                 }
-                if (("$VAR_RESULT_TEXT" -like "*FAILURES!!!*") -and ("$VAR_RESULT_TEXT" -like "*An error has occurred during program execution*")) {  # Check for errors
+                if (Test-PATestLogFailure -LogText $VAR_RESULT_TEXT) {  # Check for errors
                     throw "Failed to run test:  $VAR_RESULT_TEXT"
                 }
                 Remove-ItemSafe -Path "$TEMP_VAR"  # Delete test files so there is no need to exclude them later
@@ -2039,35 +2501,8 @@ try {  #
         Copy-FileEx -Source "$BUILD_TEMP_PATH\*.exe" -Destination "$BUILD_TEMP_PATH\setup" -Force  # Copy all required exe files into the setup folder
         Copy-FileEx -Source "$BUILD_TEMP_PATH\*.chm" -Destination "$BUILD_TEMP_PATH\setup" -Force  # Copy all required help files into the setup folder
         Copy-FileEx -Source "$BUILD_TEMP_PATH\*.dll" -Destination "$BUILD_TEMP_PATH\setup" -Force  # Copy all required dll files into the setup folder
-        $TEMP_VAR = "0.0.0.0"  # set TEMP_VAR to 0.0.0.0
-        $VAR_RESULT = 0
-        foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\scripts\*setup.pasql" -ErrorAction SilentlyContinue)) {  # Check for presence of *setup.pasql file
-            $item = $__file.FullName
-            $VAR_RESULT++
-        }
-        if ("$VAR_RESULT" -ceq "1") {  # If *setup.pasql found
-            $TEMP_VAR = Invoke-DosCommand -Command "`"C:\Compilers\RAD Studio 2007\CodeGear\Bin\grep`" -i `"AppDBVersion *= .*\d+.*`" *setup.pasql" -WorkingDirectory "$BUILD_TEMP_PATH\scripts"  # Get DB version number from pasql script
-            $TEMP_VAR = Get-SubstringBetween -Input "$TEMP_VAR" -Start "= `"" -End "`""  # 
-        }
-        foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\setup\*.exe" -ErrorAction SilentlyContinue)) {  # Get all EXEs for the build
-            $TEMP_VAR_3 = $__file.FullName
-            # [DISABLED] Get File Version Info (Get file version of the EXE) - Get file version of the EXE
-            Invoke-Program -Path "C:\work\BuildStudio\sigcheck64.exe" -Arguments "/accepteula -nobanner -n `"$TEMP_VAR_3`"" -WorkingDirectory "C:\work\BuildStudio"  # Get file version of the EXE
-            # [DISABLED] Execute Program (Get file version of the EXE) - Get file version of the EXE
-            # [DISABLED] String Reverse
-            # [DISABLED] String Concatenation
-            # [DISABLED] String Substring
-            $TEMP_VAR_2 = ("$TEMP_VAR_2").Trim()  # 
-            # [DISABLED] String Reverse
-            # [DISABLED] String Quoting
-            # Script block (VBScript): Set TEMP_VAR to the higher of TEMP_VAR and TEMP_VAR_2
-            # Converted from DelphiScript: Set TEMP_VAR to the higher of TEMP_VAR and TEMP_VAR_2
-            # Script block (VBScript): Version comparison
-            if ((Compare-Versions $TEMP_VAR_2 $TEMP_VAR) -gt 0) {
-              $TEMP_VAR = $TEMP_VAR_2
-              Write-Log "TEMP_VAR updated to: $TEMP_VAR"
-            }
-        }
+        $TEMP_VAR = "$BUILD_VERSION"  # Use the selected build version for installer names and Wise PA_VERSION.
+        Write-Log "Using build version for setup installers: $TEMP_VAR"
         if ("$TEMP_VAR" -ceq "") {
             throw "Failed to get version number: "
         } else {
@@ -2092,30 +2527,38 @@ try {  #
             }
             #endregion Prepare external files required for the build
 
-            $TEMP_VAR_3 = "$PROJECT_TITLE Setup v$TEMP_VAR.exe"  # Set TEMP_VAR_3
-            Write-Log "Build the final setup name into TEMP_VAR_3"
             # Script block (DelphiScript): Build the Wise install string into TEMP_VAR_2
             $setupPath = Join-Path "$BUILD_TEMP_PATH" "Setup"
             $currentYearForSetup = if ($CURRENT_YEAR) { $CURRENT_YEAR } else { (Get-Date).Year }
             Write-Log "$setupPath\"
-            $TEMP_VAR_2 = "`"C:\Program Files (x86)\Wise Installation System\Wise32.exe`" /d_PA_VERSION_=`"$TEMP_VAR`" /d_PA_COPYRIGHT_YEAR_=`"$currentYearForSetup`" /c `"$setupPath\Standard Setup.wse`""
+            $TEMP_VAR_2 = "`"C:\Program Files (x86)\Wise Installation System\Wise32.exe`" /d_PA_VERSION_=`"$TEMP_VAR`" /d_PA_COPYRIGHT_YEAR_=`"$currentYearForSetup`" /c /s `"$setupPath\Standard Setup.wse`""
             New-Item -ItemType Directory -Path "$BUILD_TEMP_PATH\builds" -Force | Out-Null  # Create directory for the final builds
-            # LABEL: EXE build  (GoTo not supported in PS - restructure logic)
-            Invoke-DosCommand -Command "$TEMP_VAR_2" -WorkingDirectory "$BUILD_TEMP_PATH\setup"  # Run Wise script
-            # [DISABLED] Click Window Button (Cancel "The compiler variable _WISE_ does not point..." dialog, if any) - Cancel "The compiler variable _WISE_ does not point..." dialog, if any
-            # [DISABLED] Wait for File (Wait for wise completion) - Wait for wise completion
-            if (Test-Path "$BUILD_TEMP_PATH\setup\Standard Setup.EXE") {  # Check if Wise setup completed
-                Move-Item -Path "$BUILD_TEMP_PATH\setup\Standard Setup.EXE" -Destination "$BUILD_TEMP_PATH\builds\$TEMP_VAR_3" -Force  # 
-                Invoke-SignFile   # Sign final setup file
-            } else {
-                throw "Failed build setup file:  $TEMP_VAR_3"
-            }
-            if (Test-Path "$BUILD_TEMP_PATH\debug") {  # Check if we have a debug folder
-                Copy-FileEx -Source "$BUILD_TEMP_PATH\debug\*.exe" -Destination "$BUILD_TEMP_PATH\setup" -Force  # Copy all required exe files into the setup folder
-                Rename-Item -Path "$BUILD_TEMP_PATH\debug" -NewName "debug_files" -Force  # Rename the debug folder to prevent looping
-                $TEMP_VAR_3 = "$PROJECT_TITLE Setup v$TEMP_VAR - debug.exe"  # Set TEMP_VAR_3
+
+            foreach ($setupBuild in @(
+                @{ Name = "$PROJECT_TITLE Setup v$TEMP_VAR.exe"; IsDebug = $false },
+                @{ Name = "$PROJECT_TITLE Setup v$TEMP_VAR - debug.exe"; IsDebug = $true }
+            )) {
+                if ($setupBuild.IsDebug) {
+                    if (-not (Test-Path "$BUILD_TEMP_PATH\debug")) {
+                        continue
+                    }
+                    Copy-FileEx -Source "$BUILD_TEMP_PATH\debug\*.exe" -Destination "$BUILD_TEMP_PATH\setup" -Force  # Copy all required exe files into the setup folder
+                    Rename-Item -Path "$BUILD_TEMP_PATH\debug" -NewName "debug_files" -Force  # Rename the debug folder to prevent looping
+                }
+
+                $TEMP_VAR_3 = $setupBuild.Name  # Set TEMP_VAR_3
                 Write-Log "Build the final setup name into TEMP_VAR_3"
-                # GOTO: exe_build  (GoTo not supported in PS - restructure as loop)
+                # LABEL: EXE build  (GoTo not supported in PS - restructure logic)
+                Remove-ItemSafe -Path "$BUILD_TEMP_PATH\setup\Standard Setup.EXE"
+                Invoke-DosCommand -Command "$TEMP_VAR_2" -WorkingDirectory "$BUILD_TEMP_PATH\setup"  # Run Wise script
+                # [DISABLED] Click Window Button (Cancel "The compiler variable _WISE_ does not point..." dialog, if any) - Cancel "The compiler variable _WISE_ does not point..." dialog, if any
+                # [DISABLED] Wait for File (Wait for wise completion) - Wait for wise completion
+                if (Test-Path "$BUILD_TEMP_PATH\setup\Standard Setup.EXE") {  # Check if Wise setup completed
+                    Move-Item -Path "$BUILD_TEMP_PATH\setup\Standard Setup.EXE" -Destination "$BUILD_TEMP_PATH\builds\$TEMP_VAR_3" -Force  # 
+                    Invoke-SignFile -FileName "$BUILD_TEMP_PATH\builds\$TEMP_VAR_3" -Description "$TEMP_VAR_3"  # Sign final setup file
+                } else {
+                    throw "Failed build setup file:  $TEMP_VAR_3"
+                }
             }
             # [DISABLED] File Enumerator (Cleanup setup folder) - Cleanup setup folder
         }
@@ -2153,10 +2596,6 @@ try {  #
             $BUILD_TYPE = "Release|x86"  # Release|x86
         }
         Invoke-MSBuild -SolutionFile "$BUILD_TEMP_PATH\ActiveX\PAApplications\PAApplications.sln" -Configuration "$BUILD_TYPE" -CompilerVersion "12.0"  # Compile PA Applications solution
-        # [DISABLED] Execute DOS Command (Compile WiX Installer (RELEASE)) - Compile WiX Installer (RELEASE)
-        if ("$VAR_RESULT" -ne "0") {  # Check for errors
-            throw "Failed to build solution:  $VAR_RESULT_TEXT"
-        }
         Remove-ItemSafe -Path "$BUILD_TEMP_PATH\ActiveX\PAApplications\PAApplications\*.cs" -Recurse  # Delete ActiveX\PAApplications\PAApplications\*.cs files
         Remove-ItemSafe -Path "$BUILD_TEMP_PATH\ActiveX\PAApplications\PAApplications\bin\*.pdb"  # Delete ActiveX\PAApplications\PAApplications\bin\*.pdb files
         Remove-ItemSafe -Path "$BUILD_TEMP_PATH\ActiveX\PAApplications\PAApplications\obj" -Recurse  # Remove obj folder
@@ -2165,11 +2604,15 @@ try {  #
 
         #region Build ActiveX Launcher
         Write-Log "--- Build ActiveX Launcher ---"
-        $OCX_ROOT_NAME = ("$INF_FILE_NAME").Replace('x.inf', ' ')  # 
-        $OCX_ROOT_NAME = $OCX_ROOT_NAME.Replace('$BUILD_TEMP_PATH\', ' ')  # 
-        $OCX_ROOT_NAME = ("$OCX_ROOT_NAME").Trim()  # Set OCX_ROOT_NAME
+        $OCX_ROOT_NAME = [System.IO.Path]::GetFileNameWithoutExtension($INF_FILE_NAME)
+        if ($OCX_ROOT_NAME.EndsWith('x', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $OCX_ROOT_NAME = $OCX_ROOT_NAME.Substring(0, $OCX_ROOT_NAME.Length - 1)
+        }
         $OCX_GUID = Get-IniValue -Path "$INF_FILE_NAME" -Section "ActiveXForm" -Key "CLASS_ActiveFormX"  # Set OCX_GUID
         # Get File Version Info: Set CLIENT_EXE_VERSION - no keys specified
+        if ([string]::IsNullOrWhiteSpace($CLIENT_EXE_VERSION)) {
+            $CLIENT_EXE_VERSION = $BUILD_VERSION
+        }
 
         #region Build OCX files
         Write-Log "--- Build OCX files ---"
@@ -2183,6 +2626,14 @@ try {  #
         $TxMouseButton = Get-IniValue -Path "$INF_FILE_NAME" -Section "ActiveXForm" -Key "TxMouseButton"  # Set TxMouseButton
         $TxPopupMode = Get-IniValue -Path "$INF_FILE_NAME" -Section "ActiveXForm" -Key "TxPopupMode"  # Set TxPopupMode
         Set-IniValue -Path "$INF_FILE_NAME" -Section "${OCX_ROOT_NAME}x.ocx" -Key "clsid" -Value "{$CLASS_ActiveFormX}"  # 
+        foreach ($ActiveXDestinationFile in @(
+            "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.dpr",
+            "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.dproj",
+            "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.idl",
+            "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X_TLB.pas"
+        )) {
+            Clear-PAReadOnlyFile -Path $ActiveXDestinationFile
+        }
         Move-Item -Path "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\ActiveXLauncher.dpr" -Destination "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.dpr" -Force  # Move ActiveXLauncher.dpr
         Move-Item -Path "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\ActiveXLauncher.dproj" -Destination "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.dproj" -Force  # Move ActiveXLauncher.dproj
         Move-Item -Path "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\ActiveXLauncher.idl" -Destination "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.idl" -Force  # Move ActiveXLauncher.idl
@@ -2195,15 +2646,81 @@ try {  #
         Replace-InFile -Path "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.idl" -Find "F390265A-12B0-46BD-8187-46F838E88D75" -Replace "$TxPopupMode"  # Set IDL file values
         Replace-InFile -Path "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X_TLB.pas" -Find "0468FA7A-065A-4E7D-A821-382A37683641" -Replace "$CLASS_ActiveFormX"  # Set _TLB.pas file values
         Replace-InFile -Path "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\Application\ActiveFormImpl.pas" -Find "ActiveXLauncher" -Replace "${OCX_ROOT_NAME}X"  # Set ActiveFormImpl.pas file values
+        foreach ($GeneratedOcxFile in @("$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.tlb", "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X_TLB.pas")) {
+            if (Test-Path $GeneratedOcxFile) {
+                (Get-Item -Path $GeneratedOcxFile).IsReadOnly = $false
+            }
+        }
         Invoke-DosCommand -Command "`"C:\Compilers\RAD Studio 2007\CodeGear\Bin\gentlb.exe`" -P ${OCX_ROOT_NAME}X.idl" -WorkingDirectory "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source"  # Generate TLB and _TLB.pas files
+        $GeneratedTlbUnit = "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\ActiveXLauncher_TLB.pas"
+        $ExpectedTlbUnit = "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X_TLB.pas"
+        if (Test-Path $GeneratedTlbUnit) {
+            Clear-PAReadOnlyFile -Path $ExpectedTlbUnit
+            Move-Item -Path $GeneratedTlbUnit -Destination $ExpectedTlbUnit -Force
+        }
+        Replace-InFile -Path $ExpectedTlbUnit -Find 'ActiveXLauncher_TLB' -Replace "${OCX_ROOT_NAME}X_TLB"
+        Replace-InFile -Path $ExpectedTlbUnit -Find 'ActiveXLauncher' -Replace "${OCX_ROOT_NAME}X"
+        Replace-InFile -Path "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.dproj" -Find 'ActiveXLauncher_TLB' -Replace "${OCX_ROOT_NAME}X_TLB"
+        if ([string]::IsNullOrWhiteSpace($ICON_FILE_NAME)) {
+            $ProjectIconFileName = ($PROJECT_TITLE -replace '\s+', '') + '.ico'
+            if (Test-Path "$BUILD_TEMP_PATH\source\$ProjectIconFileName") {
+                $ICON_FILE_NAME = $ProjectIconFileName
+            } else {
+                Invoke-VaultGetLatest -Repository "SDG" -Path "$/Framework/Icons/APAICON.ico" -LocalFolder "$BUILD_TEMP_PATH\source"
+                $ICON_FILE_NAME = 'APAICON.ico'
+            }
+        }
+        if (-not (Test-Path "$BUILD_TEMP_PATH\source\$ICON_FILE_NAME")) {
+            throw "Unable to locate ActiveX icon file $BUILD_TEMP_PATH\source\$ICON_FILE_NAME"
+        }
         Copy-FileEx -Source "$BUILD_TEMP_PATH\source\$ICON_FILE_NAME" -Destination "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\source" -Force  # Get project icon file
-        Set-Content -Path "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.rc" -Value "MAINICON ICON `"$ICON_FILE_NAME`"  1 VERSIONINFO  FILEVERSION $V_MAJ,$V_MIN,$V_REL,$V_REV  PRODUCTVERSION $V_MAJ,$V_MIN,$V_REL  FILEFLAGSMASK 0x3fL  FILEFLAGS 0x0L  FILEOS 0x4L  //VFT_DLL (0x2L)  FILETYPE 0x2L  //VFT_APP  //FILETYPE 0x1L  FILESUBTYPE 0x0L BEGIN     BLOCK `"StringFileInfo`"     BEGIN         BLOCK `"0c0904e4`"         BEGIN             VALUE `"CompanyName`", `"Professional Advantage Pty. Ltd.`"             VALUE `"FileDescription`", `"$PROJECT_TITLE X`"             VALUE `"FileVersion`", `"$CLIENT_EXE_VERSION`"             VALUE `"LegalCopyright`", `"©1991 - $CURRENT_YEAR`"             VALUE `"ProductName`", `"$PROJECT_TITLE`"             VALUE `"ProductVersion`", `"$V_MAJOR.$V_MINOR.$V_RELEASE`"             VALUE `"OleSelfRegister`", `"1`"         END     END     BLOCK `"VarFileInfo`"     BEGIN         VALUE `"Translation`", 0xc09, 1252     END END "  # Create RC file
-        Invoke-DosCommand -Command "`"C:\Program Files (x86)\Windows Kits\8.1\bin\x64\rc.exe`" /v /r /l0c09 /c1252 `"$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.rc`"" -WorkingDirectory "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source"  # Build the RES file
+        $OcxRcFile = "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.rc"
+        if (Test-Path $OcxRcFile) {
+            (Get-Item -Path $OcxRcFile).IsReadOnly = $false
+        }
+        $OcxRcContent = @(
+            "MAINICON ICON `"$ICON_FILE_NAME`"",
+            '',
+            '1 VERSIONINFO',
+            " FILEVERSION $V_MAJOR,$V_MINOR,$V_RELEASE,$V_BUILD",
+            " PRODUCTVERSION $V_MAJOR,$V_MINOR,$V_RELEASE,$V_BUILD",
+            ' FILEFLAGSMASK 0x3fL',
+            ' FILEFLAGS 0x0L',
+            ' FILEOS 0x4L',
+            ' FILETYPE 0x2L',
+            ' FILESUBTYPE 0x0L',
+            'BEGIN',
+            '    BLOCK "StringFileInfo"',
+            '    BEGIN',
+            '        BLOCK "0c0904e4"',
+            '        BEGIN',
+            '            VALUE "CompanyName", "Professional Advantage Pty. Ltd."',
+            "            VALUE `"FileDescription`", `"$PROJECT_TITLE X`"",
+            "            VALUE `"FileVersion`", `"$CLIENT_EXE_VERSION`"",
+            "            VALUE `"LegalCopyright`", `"Copyright 1991 - $CURRENT_YEAR`"",
+            "            VALUE `"ProductName`", `"$PROJECT_TITLE`"",
+            "            VALUE `"ProductVersion`", `"$BUILD_VERSION`"",
+            '            VALUE "OleSelfRegister", "1"',
+            '        END',
+            '    END',
+            '    BLOCK "VarFileInfo"',
+            '    BEGIN',
+            '        VALUE "Translation", 0xc09, 1252',
+            '    END',
+            'END'
+        ) -join "`r`n"
+        Set-Content -Path $OcxRcFile -Value $OcxRcContent -Encoding ASCII  # Create RC file
+        $RcResultText = Invoke-DosCommand -Command "`"C:\Program Files (x86)\Windows Kits\8.1\bin\x64\rc.exe`" /v /r /l0c09 /c1252 `"$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.rc`"" -WorkingDirectory "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source"  # Build the RES file
+        if ($script:LastExitCode -ne 0) {
+            throw "Failed to build ActiveX resource file $OcxRcFile`: $RcResultText"
+        }
         if (Test-Path "$BUILD_TEMP_PATH\source\dcc32.cfg") {  # If the main project has dcc32.cfg
             Remove-ItemSafe -Path "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\source\dcc64.cfg"  # Delete dcc64.cfg config file
         } else {
             Remove-ItemSafe -Path "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\source\dcc32.cfg"  # Delete dcc32.cfg config file
         }
+        $VAR_RESULT_TEXT = "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\Source\${OCX_ROOT_NAME}X.dproj"
+        Set-PADelphiProjectVersion -Path "$VAR_RESULT_TEXT" -Version "$BUILD_VERSION"
         Invoke-BuildProject   # Build project
         Copy-FileEx -Source "$BUILD_TEMP_PATH\ActiveX\ActiveX Launcher\${OCX_ROOT_NAME}X.ocx" -Destination "$BUILD_TEMP_PATH" -Force  # Copy OCX to the main folder
         #endregion Build OCX files
@@ -2215,30 +2732,33 @@ try {  #
         Replace-InFile -Path "$INF_FILE_NAME" -Find "^\x0D\x0A" -Replace ""  # Cleanup INF file
         $CABARC_COMMAND = " `"C:\Compilers\RAD Studio 2007\CodeGear\Bin\cabarc.exe`" n `"$BUILD_TEMP_PATH\${OCX_ROOT_NAME}ActiveX.cab`" `"$BUILD_TEMP_PATH\${OCX_ROOT_NAME}x.inf`""  # Prepare cabarc command  into CABARC_COMMAND
         foreach ($INF_FILE_NAME_ENTRY in (Get-IniSectionValues -Path "$INF_FILE_NAME" -Section "Add.Code")) {  # Loop through required files (listed in INF file)
+            $VER_NUM = ''
             if ("$INF_FILE_NAME_ENTRY" -eq "midas.dll") {  # Construct full path and file name into FULL_FILE_NAME
                 $FULL_FILE_NAME = "\\$VAULT_SERVER_ADDRESS\Groups\SDG\Setup Include Files\winsys\$INF_FILE_NAME_ENTRY"
             } else {
                 $FULL_FILE_NAME = "$BUILD_TEMP_PATH\$INF_FILE_NAME_ENTRY"
             }
-            $CABARC_COMMAND = "$CABARC_COMMAND" + ""  # Append FULL_FILE_NAME to CABARC_COMMAND
+            $CABARC_COMMAND = "$CABARC_COMMAND `"$FULL_FILE_NAME`""  # Append FULL_FILE_NAME to CABARC_COMMAND
             # Get File Version Info: Get version of the current file into VER_NUM - no keys specified
             if ("$VER_NUM" -eq "") {  # If no version number exists use the EXE version
                 $VER_NUM = "$CLIENT_EXE_VERSION"
             }
             $VER_NUM = $VER_NUM.Replace('.', ',')  # Replace dots with commas in version number
             Set-IniValue -Path "$BUILD_TEMP_PATH\${OCX_ROOT_NAME}x.inf" -Section "$INF_FILE_NAME_ENTRY" -Key "FileVersion" -Value "$VER_NUM"  # Update INF file with the VER_NUM
-            # Path Manipulation: Get the file's extension
-            # $FILE_TYPE = ... # TODO: verify path operation
+            $FILE_TYPE = [System.IO.Path]::GetExtension("$FULL_FILE_NAME")  # Get the file's extension
             if ("$FILE_TYPE" -eq ".exe") {  # If the file is exe sign it
-                Invoke-SignFile   # Sign file
+                Invoke-SignFile -FileName "$FULL_FILE_NAME" -Description ([System.IO.Path]::GetFileName("$FULL_FILE_NAME"))  # Sign file
             }
         }
         Write-Log "CABARC_COMMAND now holds cabarc command including parameters"
+        $CabFileName = "$BUILD_TEMP_PATH\${OCX_ROOT_NAME}ActiveX.cab"
+        Clear-PAReadOnlyFile -Path $CabFileName
+        Remove-ItemSafe -Path $CabFileName
         $VAR_RESULT_TEXT = Invoke-DosCommand -Command "$CABARC_COMMAND"  # Create CAB file
-        if ("$VAR_RESULT" -ne "0") {  # Check for errors
+        if ($script:LastExitCode -ne 0) {  # Check for errors
             throw "Failed to create CAB file:  $VAR_RESULT_TEXT"
         }
-        Invoke-SignFile   # Sign CAB file
+        Invoke-SignFile -FileName $CabFileName -Description "$PROJECT_TITLE ActiveX CAB"  # Sign CAB file
         #endregion Build CAB file
 
         #endregion Build ActiveX Launcher
@@ -2374,7 +2894,7 @@ try {  #
                     Invoke-DosCommand -Command "$MSBUILD_EXE `"$BUILD_TEMP_PATH\..\Visual Studio\BankReconciliationWix.sln`" `"/t:REBUILD`" `"/p:Configuration=Release`" `"/p:Platform=x86`""  # Compile WiX Installer (RELEASE)
                     # [DISABLED] If ... Then (Check for errors) - Check for errors
                     Move-Item -Path "$BUILD_TEMP_PATH\..\Visual Studio\BankReconciliationSetup\bin\Release\*Setup.msi" -Destination "$BUILD_TEMP_PATH\builds\$PROJECT_TITLE Setup v$BUILD_VERSION.msi" -Force  # 
-                    Invoke-SignFile   # Sign MSI file
+                    Invoke-SignFile -FileName "$BUILD_TEMP_PATH\builds\$PROJECT_TITLE Setup v$BUILD_VERSION.msi" -Description "$PROJECT_TITLE Setup v$BUILD_VERSION.msi"  # Sign MSI file
                     $VS_LABEL = "Build $BUILD_VERSION"  # Set VS_LABEL
                     Invoke-VaultCheckIn -Repository "SDG" -Path "$SOURCE_CONTROL_VISUAL_STUDIO_PATH/*" -Comment "$VS_LABEL"  # 
                 } finally {  # 
@@ -2401,13 +2921,26 @@ try {  #
 
                 #region Build ActiveX setup exe
                 Write-Log "--- Build ActiveX setup exe ---"
-                $REVISION_GUID = [guid]::NewGuid().ToString('Plain').ToUpper()  # 
+                $REVISION_GUID = [guid]::NewGuid().ToString('N').ToUpper()  # 
                 Replace-InFile -Path "$BUILD_TEMP_PATH\ActiveX\InstallAware\PA Applications.mpr" -Find "`"TITLE=PA Applications`"" -Replace "`"TITLE=$PROJECT_TITLE ActiveX`""  # Set InstallAware project values
+                Replace-InFile -Path "$BUILD_TEMP_PATH\ActiveX\InstallAware\PA Applications.mpr" -Find "VERSION=\d+\.\d+\.\d+\.\d+" -Replace "VERSION=$BUILD_VERSION" -UseRegex  # Set InstallAware output version
                 Invoke-InstallAware -ProjectFile "$BUILD_TEMP_PATH\ActiveX\InstallAware\PA Applications.mpr" -BuildType "Compressed Single Self Installing EXE"  # Build Active X setup
-                if ("$VAR_RESULT" -ne "0") {  # Check for errors
-                    throw "Failed to build InstallAware project:  $VAR_RESULT_TEXT"
+                $activeXSetupFiles = @(Get-ChildItem -Path "$BUILD_TEMP_PATH\ActiveX\InstallAware\Release\Single\*.exe" -File -ErrorAction SilentlyContinue)
+                if ($activeXSetupFiles.Count -eq 0) {
+                    throw "InstallAware completed but no ActiveX setup EXE was found in $BUILD_TEMP_PATH\ActiveX\InstallAware\Release\Single"
                 }
-                Invoke-SignFile   # Sign Active X setup file
+                $expectedActiveXSetup = Join-Path "$BUILD_TEMP_PATH\ActiveX\InstallAware\Release\Single" "$PROJECT_TITLE ActiveX Setup v$BUILD_VERSION.exe"
+                foreach ($activeXSetup in $activeXSetupFiles) {
+                    $activeXSetupPath = $activeXSetup.FullName
+                    if ($activeXSetupPath -ne $expectedActiveXSetup) {
+                        Clear-PAReadOnlyFile -Path $expectedActiveXSetup
+                        Remove-ItemSafe -Path $expectedActiveXSetup
+                        Move-Item -Path $activeXSetupPath -Destination $expectedActiveXSetup -Force
+                        $activeXSetupPath = $expectedActiveXSetup
+                    }
+                    Invoke-SignFile -FileName $activeXSetupPath -Description ([System.IO.Path]::GetFileName($activeXSetupPath))  # Sign Active X setup file
+                }
+                New-Item -ItemType Directory -Path "$BUILD_TEMP_PATH\builds" -Force | Out-Null
                 Copy-FileEx -Source "$BUILD_TEMP_PATH\ActiveX\InstallAware\Release\Single\*.exe" -Destination "$BUILD_TEMP_PATH\builds" -Force  # 
                 #endregion Build ActiveX setup exe
 
@@ -2428,7 +2961,7 @@ try {  #
             Invoke-DosCommand -Command "$MSBUILD_EXE `"$INF_FILE_NAME`" `"/t:REBUILD`" `"/p:Configuration=Release`" `"/p:Platform=x86`""  # Compile WiX Installer (RELEASE)
             New-Item -ItemType Directory -Path "$BUILD_TEMP_PATH\builds" -Force | Out-Null  # Create %BUILD_TEMP_PATH%\builds
             Move-Item -Path "$BUILD_TEMP_PATH\Setup\bin\Release\*Setup.msi" -Destination "$BUILD_TEMP_PATH\builds\$PROJECT_TITLE Setup v$BUILD_VERSION.msi" -Force  # 
-            Invoke-SignFile   # Sign MSI file
+            Invoke-SignFile -FileName "$BUILD_TEMP_PATH\builds\$PROJECT_TITLE Setup v$BUILD_VERSION.msi" -Description "$PROJECT_TITLE Setup v$BUILD_VERSION.msi"  # Sign MSI file
         }
     }
     if (Test-Path "$BUILD_TEMP_PATH\Setup\Setup.sln") {  # If file Setup.sln exists (new setup)
@@ -2464,7 +2997,7 @@ try {  #
                 $NEW_MSI_FILE = "$MSI_FILE"  # Set new msi file name
             }
             Move-Item -Path "$BUILD_TEMP_PATH\Setup\$MSI_FILE" -Destination "$BUILD_TEMP_PATH\builds\$NEW_MSI_FILE" -Force  # This is the release setup
-            Invoke-SignFile   # Sign MSI file
+            Invoke-SignFile -FileName "$BUILD_TEMP_PATH\builds\$NEW_MSI_FILE" -Description "$NEW_MSI_FILE"  # Sign MSI file
         } else {
             throw "`"$BUILD_TEMP_PATH\Setup\Setup.sln`" failed to build!"
         }
@@ -2519,8 +3052,10 @@ try {  #
             New-Item -ItemType Directory -Path "$TEMP_VAR" -Force | Out-Null  # 
         }
         $OVERWRITE_FILES = "false"  # Set OVERWRITE_FILES to false
+        $COPIED_RELEASE_ARTIFACT_COUNT = 0
         if (Test-Path "$BUILD_TEMP_PATH\builds") {  # Check if builds... directory exists
-            foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\builds\*.*" -ErrorAction SilentlyContinue)) {  # 
+            $releaseArtifacts = @(Get-ChildItem -Path "$BUILD_TEMP_PATH\builds\*.*" -File -ErrorAction SilentlyContinue)
+            foreach ($__file in $releaseArtifacts) {  # 
                 $TEMP_VAR_2 = $__file.FullName
                 $TEMP_VAR_3 = Split-Path -Path "$TEMP_VAR_2" -Leaf  # 
                 if (Test-Path "$TEMP_VAR\$TEMP_VAR_3") {  # 
@@ -2528,7 +3063,7 @@ try {  #
                     break
                 }
             }
-            if (("$OVERWRITE_FILES" -eq "true") -and ("$OVERWRITE_FILES" -eq "yes")) {  # If OVERWRITE_FILES = true
+            if (("$OVERWRITE_FILES" -eq "true") -or ("$OVERWRITE_FILES" -eq "yes")) {  # If OVERWRITE_FILES = true
                 Copy-FileEx -Source "$BUILD_TEMP_PATH\builds\*.*" -Destination "$TEMP_VAR" -Force  # Overwrite copy files to \\%VAULT_SERVER_ADDRESS%\forqa\...
                 if ("$VAR_RESULT" -ceq "0") {  # Check for errors
                     Write-Log "[MESSAGE] "
@@ -2541,9 +3076,11 @@ try {  #
                 } else {
                 }
             }
+            $COPIED_RELEASE_ARTIFACT_COUNT = $releaseArtifacts.Count
         } else {
             if (Test-Path "$BUILD_TEMP_PATH\setup") {  # Check if Setup... directory exists
-                foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\setup\*.exe" -ErrorAction SilentlyContinue)) {  # 
+                $releaseArtifacts = @(Get-ChildItem -Path "$BUILD_TEMP_PATH\setup\*.*" -File -ErrorAction SilentlyContinue)
+                foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\setup\*.exe" -File -ErrorAction SilentlyContinue)) {  # 
                     $TEMP_VAR_2 = $__file.FullName
                     $TEMP_VAR_3 = Split-Path -Path "$TEMP_VAR_2" -Leaf  # 
                     if (Test-Path "$TEMP_VAR\$TEMP_VAR_3") {  # 
@@ -2576,8 +3113,13 @@ try {  #
                     } else {
                     }
                 }
+                $COPIED_RELEASE_ARTIFACT_COUNT = $releaseArtifacts.Count
             }
         }
+        if ($COPIED_RELEASE_ARTIFACT_COUNT -eq 0) {
+            throw "No release artifacts were found to copy from $BUILD_TEMP_PATH\builds or $BUILD_TEMP_PATH\setup."
+        }
+        Write-Log "Copied $COPIED_RELEASE_ARTIFACT_COUNT release artifact(s) to $TEMP_VAR"
         $LAST_BUILD_VERSION = "$TEMP_VAR\v$BUILD_VERSION"  # LAST_BUILD_VERSION
         #endregion Move all setups to the release folder
 
@@ -2653,8 +3195,7 @@ try {  #
         $VersionFolderPath = "$BUILD_TEMP_PATH\..\$V_MAJOR.$V_MINOR.$V_RELEASE"  # set VersionFolderPath
         # [DISABLED] If Directory Exists (VersionFolderPath) - VersionFolderPath
         # [DISABLED] Else
-        Copy-Item -Path "" -Destination "" -Recurse -Force  # Copy everything to the VersionFolderPath folder
-        Remove-ItemSafe -Path "$BUILD_TEMP_PATH" -Recurse  # 
+        Write-Log "Preserving build snapshot at $BUILD_TEMP_PATH"
         #endregion Cleanup
 
     } else {
@@ -2731,10 +3272,12 @@ try {  #
         # [DISABLED] Group (Cleanup) - Cleanup
     } else {
         if ("$VAR_RESULT_TEXT" -notlike "*Build cancelled by user*") {
-            Write-Log "[MESSAGE] "
+            Write-Log "[ERROR] $($_.Exception.Message)"
+            Write-Log "[ERROR] $($_.ScriptStackTrace)"
+            Write-Log "[MESSAGE] $VAR_RESULT_TEXT"
         }
     }
     #endregion Handle errors
 
-    return  # Stop Macro Execution - 
+    exit 1  # Stop Macro Execution - 
 }
