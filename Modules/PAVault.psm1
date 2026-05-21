@@ -43,4 +43,22 @@ function New-PAVaultCommandArgs {
     return @($Command) + (Get-PAVaultAuthArgs -HostName $HostName -UserName $UserName -Password $Password) + @('-repository', $Repository) + $AdditionalArgs
 }
 
-Export-ModuleMember -Function Get-PAVaultAuthArgs, Split-PAVaultParameters, New-PAVaultCommandArgs
+function Resolve-PAVaultPathFromWorkingFile {
+    param(
+        [Parameter(Mandatory)][string]$LocalRoot,
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][string]$FilePath
+    )
+
+    $resolvedLocalRoot = [System.IO.Path]::GetFullPath($LocalRoot).TrimEnd('\', '/')
+    $resolvedFilePath = [System.IO.Path]::GetFullPath($FilePath)
+    if (-not $resolvedFilePath.StartsWith($resolvedLocalRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "File path '$FilePath' is not under local root '$LocalRoot'."
+    }
+
+    $relativePath = $resolvedFilePath.Substring($resolvedLocalRoot.Length).TrimStart('\', '/').Replace('\', '/')
+    $normalizedRepositoryRoot = $RepositoryRoot.Replace('\', '/').TrimEnd('/')
+    return "$normalizedRepositoryRoot/$relativePath"
+}
+
+Export-ModuleMember -Function Get-PAVaultAuthArgs, Split-PAVaultParameters, New-PAVaultCommandArgs, Resolve-PAVaultPathFromWorkingFile

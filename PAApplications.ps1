@@ -307,6 +307,17 @@ function Get-ProjectVersion {
     }
 }
 
+function Invoke-PAVaultCheckOutWorkingFile {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if ("$SOURCE_CONTROL_LABEL" -ne "") {
+        return
+    }
+
+    $vaultPath = Resolve-PAVaultPathFromWorkingFile -LocalRoot $BUILD_TEMP_PATH -RepositoryRoot $SOURCE_CONTROL_SOURCE_PATH -FilePath $Path
+    Invoke-VaultCheckOut -Repository "SDG" -Path $vaultPath -Host "$VAULT_SERVER_ADDRESS"
+}
+
 #region Vault Source Control Helpers
 
 $script:VaultExe = 'C:\Program Files (x86)\SourceGear\Vault Client\vault.exe'
@@ -1871,82 +1882,26 @@ try {  #
     #region Get the highest version from project files and prompt for new version
     Write-Log "--- Get the highest version from project files and prompt for new version ---"
     if ("$BUILD_VERSION_SET" -ne "Y") {  # If BUILD_VERSION_SET <> Y
-        if ("$DELPHI_VERSION" -ceq "10.4") {  # Delphi 10.4
-		    Write-Log "Just entered inside DELPHI_VERSION -ceq 10.4"
-			
-            Write-Log "[DEBUG] Searching for .dproj files in: $BUILD_TEMP_PATH\Source"
-			
-            $BUILD_VERSION = "0.0.0.0"
-            $projectFiles = @(Get-ChildItem -Path "$BUILD_TEMP_PATH\Source\*.dproj" -ErrorAction SilentlyContinue)
-			
-			Write-Log "[DEBUG] Found $($projectFiles.Count) .dproj files"
- 
-            # Debug: Check if files were found and are readable
-			$testFile = Get-ChildItem -Path "$BUILD_TEMP_PATH\Source\Collect.dproj" -ErrorAction SilentlyContinue
-            if ($testFile) {
-                Write-Log "[DEBUG] Test file found: $($testFile.FullName)"
-                Write-Log "[DEBUG] File size: $($testFile.Length) bytes"
-    
-                # Try to read first few lines
-                $firstLines = Get-Content -Path $testFile.FullName -TotalCount 5 -ErrorAction SilentlyContinue
-                Write-Log "[DEBUG] First 5 lines:`n$($firstLines -join "`n")"
-            } else {
-                Write-Log "[ERROR] Cannot find Collect.dproj in $BUILD_TEMP_PATH\Source"
+        $projectVersionPattern = if ("$DELPHI_VERSION" -ceq "6") { '*.dof' } else { '*.dproj' }
+        Write-Log "[DEBUG] Searching for $projectVersionPattern files in: $BUILD_TEMP_PATH\Source"
+        $BUILD_VERSION = "0.0.0.0"
+        $projectFiles = @(Get-ChildItem -Path "$BUILD_TEMP_PATH\Source\$projectVersionPattern" -File -ErrorAction SilentlyContinue)
+        Write-Log "[DEBUG] Found $($projectFiles.Count) project version file(s)"
+
+        foreach ($projectFile in $projectFiles) {
+            Write-Log "[DEBUG] Processing version from: $($projectFile.Name)"
+            $projVersion = Get-ProjectVersion -ProjectPath $projectFile.FullName
+            $projVersionString = "$($projVersion.Major).$($projVersion.Minor).$($projVersion.Release).$($projVersion.Build)"
+            if ((Compare-Versions -Version1 $projVersionString -Version2 $BUILD_VERSION) -gt 0) {
+                $BUILD_VERSION = $projVersionString
+                Write-Log "[DEBUG] Updated BUILD_VERSION to: $BUILD_VERSION"
             }
-			
- #           foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\source\*.dproj" -ErrorAction SilentlyContinue)) {  # Loop through DPROJ project files, project name in VAR_RESULT_TEXT
-            foreach ($projectFile in $projectFiles) {
-                Write-Log "[DEBUG] Processing: $($projectFile.Name)"
-				
-				$projVersion = Get-ProjectVersion -ProjectPath $projectFile.FullName
-                $projVersionString = "$($projVersion.Major).$($projVersion.Minor).$($projVersion.Release).$($projVersion.Build)" 
-				
-				# Compare versions
-				$comparison = Compare-Versions -Version1 $projVersionString -Version2 $BUILD_VERSION
-				if ($comparison -gt 0) {
-					$BUILD_VERSION = $projVersionString
-					Write-Log "[DEBUG] Updated BUILD_VERSION to: $BUILD_VERSION"
-                }
-				
-				
-            }
-			if ($BUILD_VERSION -eq "0.0.0.0") {
-				Write-Log "[WARNING] No version information found in project files, using default 0.0.0.0"
-			}
-			else {
-				Write-Log "[DEBUG] Highest version found: $BUILD_VERSION"
-			}
-			
+        }
+
+        if ($BUILD_VERSION -eq "0.0.0.0") {
+            Write-Log "[WARNING] No version information found in project files, using default 0.0.0.0"
         } else {
-            if ("$DELPHI_VERSION" -ceq "6") {  # Delphi 6
-                foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\source\*.dof" -ErrorAction SilentlyContinue)) {  # Loop through DOF project files, project name in VAR_RESULT_TEXT
-                    $VAR_RESULT_TEXT = $__file.FullName
-                    $V_MAJOR = Get-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info" -Key "MajorVer"  # 
-                    $V_MINOR = Get-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info" -Key "MinorVer"  # 
-                    $V_RELEASE = Get-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info" -Key "Release"  # 
-                    $V_BUILD = Get-IniValue -Path "$VAR_RESULT_TEXT" -Section "Version Info" -Key "Build"  # 
-                    # Script block (VBScript): Set SOURCE_CONTROL_VERSION to higher of two versions
-                    $TEMP = "$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"
-                    if ((Compare-Versions $TEMP $SOURCE_CONTROL_VERSION) -gt 0) {
-                      $SOURCE_CONTROL_VERSION = $TEMP
-                      Write-Log "SOURCE_CONTROL_VERSION updated to: $SOURCE_CONTROL_VERSION"
-                    }
-                }
-            } else {
-                foreach ($__file in (Get-ChildItem -Path "$BUILD_TEMP_PATH\source\*.dproj" -ErrorAction SilentlyContinue)) {  # Loop through DPROJ project files, project name in VAR_RESULT_TEXT
-                    $VAR_RESULT_TEXT = $__file.FullName
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"MajorVer`"] "  # V_MAJOR
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"MinorVer`"] "  # V_MINOR
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"Release`"] "  # V_RELEASE
-                    $None = Get-XmlValue -Path "" -XPath "//*[local-name()='VersionInfo'][@Name=`"Build`"] "  # V_BUILD
-                    # Script block (VBScript): Version comparison
-                    $TEMP = "$V_MAJOR.$V_MINOR.$V_RELEASE.$V_BUILD"
-                    if ((Compare-Versions $TEMP $SOURCE_CONTROL_VERSION) -gt 0) {
-                      $SOURCE_CONTROL_VERSION = $TEMP
-                      Write-Log "SOURCE_CONTROL_VERSION updated to: $SOURCE_CONTROL_VERSION"
-                    }
-                }
-            }
+            Write-Log "[DEBUG] Highest version found: $BUILD_VERSION"
         }
     }
 	
@@ -2117,6 +2072,7 @@ try {  #
             }
 
             foreach ($projectVersionFile in $projectVersionFiles) {
+                Invoke-PAVaultCheckOutWorkingFile -Path $projectVersionFile.FullName
                 Set-PADelphiProjectVersion -Path $projectVersionFile.FullName -Version $selectedBuildVersion
             }
 
@@ -2127,6 +2083,7 @@ try {  #
 
             foreach ($versionFile in $versionFiles) {
                 try {
+                    Invoke-PAVaultCheckOutWorkingFile -Path $versionFile.FullName
                     Set-PAVersionSourceFileVersion -Path $versionFile.FullName -Version $selectedBuildVersion
                 } catch {
                     Write-Log "[ERROR] Failed to update version source file $($versionFile.FullName): $_"
@@ -2149,6 +2106,7 @@ try {  #
                     Write-Log "[DEBUG] Processing PASQL file: $($pasqlFile.FullName)"
             
                     try {
+                        Invoke-PAVaultCheckOutWorkingFile -Path $pasqlFile.FullName
                         Set-PASetupPasqlVersion -Path $pasqlFile.FullName -Version $BUILD_VERSION
                 
                     } catch {

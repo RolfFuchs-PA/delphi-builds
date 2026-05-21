@@ -19,4 +19,9 @@ Describe 'PAVault' {
         $args | Should Contain '-repository'
         $args | Should Contain '$/Products/App'
     }
+
+    It 'maps local working files back to Vault paths' {
+        $path = Resolve-PAVaultPathFromWorkingFile -LocalRoot 'C:\Builds\Under Development\Products\Collect\Branches\23.1.1' -RepositoryRoot '$/Products/Collect/Branches/23.1.1' -FilePath 'C:\Builds\Under Development\Products\Collect\Branches\23.1.1\Source\Collect.dproj'
+        $path | Should Be '$/Products/Collect/Branches/23.1.1/Source/Collect.dproj'
+    }
 }
