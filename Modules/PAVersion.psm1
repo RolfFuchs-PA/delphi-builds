@@ -131,22 +131,60 @@ function Get-PADprojVersion {
         Build   = 0
     }
 
-    $nodeMap = @{
-        Major   = @("//*[local-name()='VerInfo_MajorVer']", "//*[local-name()='VersionInfo' and @Name='MajorVer']")
-        Minor   = @("//*[local-name()='VerInfo_MinorVer']", "//*[local-name()='VersionInfo' and @Name='MinorVer']")
-        Release = @("//*[local-name()='VerInfo_Release']", "//*[local-name()='VersionInfo' and @Name='Release']")
-        Build   = @("//*[local-name()='VerInfo_Build']", "//*[local-name()='VersionInfo' and @Name='Build']")
+    $modernNodeMap = @{
+        Major   = "//*[local-name()='VerInfo_MajorVer']"
+        Minor   = "//*[local-name()='VerInfo_MinorVer']"
+        Release = "//*[local-name()='VerInfo_Release']"
+        Build   = "//*[local-name()='VerInfo_Build']"
     }
 
-    foreach ($key in $nodeMap.Keys) {
-        foreach ($xpath in $nodeMap[$key]) {
-            $node = $xml.SelectSingleNode($xpath)
+    $hasModernVersionInfo = $false
+    $hasModernFileVersion = $false
+    $verInfoKeysNodes = @($xml.SelectNodes("//*[local-name()='VerInfo_Keys']"))
+    foreach ($verInfoKeysNode in $verInfoKeysNodes) {
+        $hasModernVersionInfo = $true
+        if ($verInfoKeysNode.InnerText -match '(?i)(?:^|;)FileVersion=(\d+(?:\.\d+){1,3})(?:;|$)') {
+            $candidateVersion = $Matches[1]
+            $currentVersion = Join-PAVersion -Major $values.Major -Minor $values.Minor -Release $values.Release -Build $values.Build
+            if (-not $hasModernFileVersion -or (Compare-PAVersion -Version1 $candidateVersion -Version2 $currentVersion) -gt 0) {
+                $fileVersionParts = ConvertTo-PAVersionParts -Version $candidateVersion
+                $values.Major = $fileVersionParts[0]
+                $values.Minor = $fileVersionParts[1]
+                $values.Release = $fileVersionParts[2]
+                $values.Build = $fileVersionParts[3]
+                $hasModernFileVersion = $true
+            }
+        }
+    }
+
+    if (-not $hasModernFileVersion) {
+        foreach ($key in $modernNodeMap.Keys) {
+            $node = $xml.SelectSingleNode($modernNodeMap[$key])
+            if ($node) {
+                $hasModernVersionInfo = $true
+                $value = 0
+                if ([int]::TryParse($node.InnerText, [ref]$value)) {
+                    $values[$key] = $value
+                }
+            }
+        }
+    }
+
+    if (-not $hasModernVersionInfo) {
+        $legacyNodeMap = @{
+            Major   = "//*[local-name()='VersionInfo' and @Name='MajorVer']"
+            Minor   = "//*[local-name()='VersionInfo' and @Name='MinorVer']"
+            Release = "//*[local-name()='VersionInfo' and @Name='Release']"
+            Build   = "//*[local-name()='VersionInfo' and @Name='Build']"
+        }
+
+        foreach ($key in $legacyNodeMap.Keys) {
+            $node = $xml.SelectSingleNode($legacyNodeMap[$key])
             if ($node) {
                 $value = 0
                 if ([int]::TryParse($node.InnerText, [ref]$value)) {
                     $values[$key] = $value
                 }
-                break
             }
         }
     }

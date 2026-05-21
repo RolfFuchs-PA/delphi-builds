@@ -32,6 +32,34 @@ Describe 'PAVersion' {
         Join-PAVersion -Major $version.Major -Minor $version.Minor -Release $version.Release -Build $version.Build | Should Be '23.1.4.9'
     }
 
+    It 'does not mix modern DPROJ version keys with stale version values' {
+        $path = Join-Path $TestDrive 'MixedModernLegacy.dproj'
+        @'
+<Project>
+  <PropertyGroup>
+    <VerInfo_Keys>CompanyName=Professional Advantage Pty. Ltd.;FileVersion=23.1.0.11;ProductVersion=23.1.0;Comments=</VerInfo_Keys>
+  </PropertyGroup>
+  <PropertyGroup>
+    <VerInfo_MajorVer>23</VerInfo_MajorVer>
+    <VerInfo_MinorVer>1</VerInfo_MinorVer>
+    <VerInfo_Release>1</VerInfo_Release>
+    <VerInfo_Keys>CompanyName=Professional Advantage Pty. Ltd.;FileVersion=23.1.1.0;ProductVersion=23.1.1;Comments=</VerInfo_Keys>
+  </PropertyGroup>
+  <BorlandProject>
+    <Delphi.Personality>
+      <VersionInfo Name="MajorVer">6</VersionInfo>
+      <VersionInfo Name="MinorVer">2</VersionInfo>
+      <VersionInfo Name="Release">0</VersionInfo>
+      <VersionInfo Name="Build">11</VersionInfo>
+    </Delphi.Personality>
+  </BorlandProject>
+</Project>
+'@ | Set-Content -Path $path
+
+        $version = Get-PAProjectVersion -Path $path
+        Join-PAVersion -Major $version.Major -Minor $version.Minor -Release $version.Release -Build $version.Build | Should Be '23.1.1.0'
+    }
+
     It 'extracts legacy DOF version values' {
         $path = Join-Path $TestDrive 'Legacy.dof'
         @'
