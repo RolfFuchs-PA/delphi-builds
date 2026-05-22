@@ -51,6 +51,42 @@ function Get-PAIniValue {
     return ''
 }
 
+function Write-PAIniLines {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string[]]$Lines
+    )
+
+    $directory = Split-Path -Path $Path -Parent
+    if ($directory -and -not (Test-Path $directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+
+    if (Test-Path $Path) {
+        $item = Get-Item -Path $Path
+        if ($item.IsReadOnly) {
+            $item.IsReadOnly = $false
+        }
+    }
+
+    try {
+        [System.IO.File]::WriteAllLines($Path, $Lines)
+    } catch [System.UnauthorizedAccessException] {
+        $tempPath = Join-Path $directory ('.{0}.{1}.tmp' -f ([System.IO.Path]::GetFileName($Path)), [guid]::NewGuid().ToString('N'))
+        try {
+            [System.IO.File]::WriteAllLines($tempPath, $Lines)
+            if (Test-Path $Path) {
+                Remove-Item -Path $Path -Force -ErrorAction Stop
+            }
+            Move-Item -Path $tempPath -Destination $Path -Force -ErrorAction Stop
+        } finally {
+            if (Test-Path $tempPath) {
+                Remove-Item -Path $tempPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
 function Set-PAIniValue {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -60,7 +96,7 @@ function Set-PAIniValue {
     )
 
     if (-not (Test-Path $Path)) {
-        Set-Content -Path $Path -Value "[$Section]`r`n$Key=$Value" -NoNewline
+        Write-PAIniLines -Path $Path -Lines @("[$Section]", "$Key=$Value")
         return
     }
 
@@ -96,13 +132,7 @@ function Set-PAIniValue {
         $result.Add("$Key=$Value")
     }
 
-    if (Test-Path $Path) {
-        $item = Get-Item -Path $Path
-        if ($item.IsReadOnly) {
-            $item.IsReadOnly = $false
-        }
-    }
-    [System.IO.File]::WriteAllLines($Path, $result)
+    Write-PAIniLines -Path $Path -Lines $result.ToArray()
 }
 
 function Get-PAIniSectionKeys {

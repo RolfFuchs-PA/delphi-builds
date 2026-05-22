@@ -62,4 +62,8 @@ Describe 'PAFiles' {
         Get-PATrunkPath -SourceControlPath '$\Products\Bank\Trunk\Delphi' | Should Be '$/Products/Bank/Trunk'
         Get-PAVisualStudioPath -SourceControlPath '$\Products\Bank\Trunk\Delphi' | Should Be '$/Products/Bank/Trunk/Visual Studio'
     }
+
+    It 'normalizes bare carriage returns to CRLF' {
+        Convert-PACarriageReturnsToCrLf -Text "one`rtwo`r`nthree" | Should Be "one`r`ntwo`r`nthree"
+    }
 }
